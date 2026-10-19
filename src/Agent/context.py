@@ -1,32 +1,36 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
+
 from models import AgentStep, Task
 
 
+def truncate(text: str, limit: int) -> str:
+    marker = "...[truncated]..."
+    if len(text) > limit:
+        available = limit - len(marker)
+        text = text[:available // 2] + marker + text[-(available - available // 2):]
+    return text
+
+
+@dataclass(frozen=True)
 class DecisionContext:
-    def __init__(
-        self,
-        task: Task,
-        documentation: dict[str, str],
-        history: tuple[AgentStep, ...],
-        proposed_answer: str,
-    ) -> None:
-        self.task = task
-        self.documentation = documentation
-        self.history = history
-        self.proposed_answer = proposed_answer
+    task: Task
+    documentation: dict[str, str]
+    history: tuple[AgentStep, ...]
 
     @property
-    def question(self) -> str:
-        return self.task.question
-
-    @property
-    def answer_format(self) -> str:
-        return self.task.answer_format
-
-    @property
-    def agent_trace(self) -> str:
-        return "\n".join(
-            f"[step {s.index}] tool: {s.tool_name}({s.tool_args})\nresult: {s.tool_result}"
-            for s in self.history
+    def state(self) -> str:
+        trace = "\n".join(
+            f"[{step.index}] {step.tool_name}({json.dumps(step.tool_args)}) -> "
+            f"{truncate(step.tool_result, 400)}"
+            for step in self.history[-8:]
+        )
+        observation = truncate(self.history[-1].tool_result, 2000) if self.history else "No observations yet."
+        docs = "\n\n".join(f"{name}:\n{text}" for name, text in self.documentation.items())
+        return truncate(
+            f"TASK: {self.task.question}\nANSWER FORMAT: {self.task.answer_format}\n"
+            f"DOCUMENTATION:\n{docs}\nHISTORY:\n{trace}\nCURRENT OBSERVATION:\n{observation}",
+            12000,
         )

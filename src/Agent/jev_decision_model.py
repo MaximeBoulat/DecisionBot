@@ -4,10 +4,11 @@ import json
 import urllib.request
 
 from Agent.context import DecisionContext
+from Agent.decision_model import DecisionModel
 from models import DecisionQuestion, DecisionRequest, DecisionResponse, QuestionAnswer
 
 
-class SystemOneDecisionModel:
+class SystemOneDecisionModel(DecisionModel):
     def __init__(self, model: str, base_url: str, api_key: str | None = None, timeout: float = 600) -> None:
         self.model = model
         self.base_url = base_url
@@ -24,19 +25,10 @@ class SystemOneDecisionModel:
             wire["criteria"] = question.criteria
         return wire
 
-    def _state(self, context: DecisionContext) -> dict:
-        return {
-            "question": context.question,
-            "answer_format": context.answer_format,
-            "documentation": context.documentation,
-            "agent_trace": context.agent_trace,
-            "proposed_answer": context.proposed_answer,
-        }
-
     def invoke(self, context: DecisionContext, request: DecisionRequest) -> DecisionResponse:
         payload = {
             "model": self.model,
-            "state": self._state(context),
+            "state": context.state,
             "questions": {q.name: self._wire_question(q) for q in request.questions},
         }
         headers = {"content-type": "application/json"}
@@ -54,6 +46,6 @@ class SystemOneDecisionModel:
             if "noul" in ans:
                 answers[name] = QuestionAnswer(probability=ans["noul"])
             else:
-                answers[name] = QuestionAnswer(probabilities=ans["probabilities"])
+                answers[name] = QuestionAnswer(probabilities=ans["probabilities"], choice=ans.get("choice"), confidence=ans.get("confidence"))
         input_tokens = (body.get("usage") or {}).get("input_tokens")
-        return DecisionResponse(answers=answers, input_tokens=input_tokens)
+        return DecisionResponse(answers=answers, input_tokens=input_tokens, model=body.get("model"))

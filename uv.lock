@@ -160,20 +160,20 @@ wheels = [
 name = "decision-bot"
 version = "0.1.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "pandas" },
+]
 
 [package.dev-dependencies]
 dev = [
     { name = "ipykernel" },
-    { name = "pandas" },
 ]
 
 [package.metadata]
+requires-dist = [{ name = "pandas", specifier = ">=3.0.6" }]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "ipykernel", specifier = ">=7.4.0" },
-    { name = "pandas", specifier = ">=3.0.6" },
-]
+dev = [{ name = "ipykernel", specifier = ">=7.4.0" }]
 
 [[package]]
 name = "executing"

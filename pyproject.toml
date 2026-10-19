@@ -4,10 +4,9 @@ version = "0.1.0"
 description = "A live DABstep-solving agent with decision points delegated to a decision model."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["pandas>=3.0.6"]
 
 [dependency-groups]
 dev = [
     "ipykernel>=7.4.0",
-    "pandas>=3.0.6",
 ]

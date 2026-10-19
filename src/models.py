@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 
@@ -20,6 +20,12 @@ class AgentStep:
     decided_by: Literal["llm", "jev"]
     proposed_answer: str | None = None
     jev_confidence: float | None = None
+    accepted: bool | None = None
+    error: str | None = None
+    decision_question: DecisionQuestion | None = None
+    decision_threshold: float | None = None
+    decisions: tuple[DecisionRecord, ...] = ()
+    argument_sources: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,11 @@ class EpisodeResult:
     final_answer: str | None
     finished: bool
     error: str | None
+    task: Task | None = None
+    documentation: dict[str, str] = field(default_factory=dict)
+    mode: str = "cascade"
+    llm_calls: int = 0
+    jev_calls: int = 0
 
 
 @dataclass(frozen=True)
@@ -57,9 +68,24 @@ class DecisionRequest:
 class QuestionAnswer:
     probability: float | None = None
     probabilities: dict[str, float] | None = None
+    choice: str | None = None
+    confidence: float | None = None
 
 
 @dataclass(frozen=True)
 class DecisionResponse:
     answers: dict[str, QuestionAnswer]
     input_tokens: int | None = None
+    model: str | None = None
+
+
+@dataclass(frozen=True)
+class DecisionRecord:
+    point: str
+    question: DecisionQuestion
+    choice: str | None
+    confidence: float | None
+    threshold: float | None
+    accepted: bool
+    response: DecisionResponse | None = None
+    error: str | None = None

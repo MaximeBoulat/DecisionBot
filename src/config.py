@@ -13,14 +13,19 @@ def _load_env(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
-_load_env(Path(".env"))
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+_load_env(PROJECT_DIR / ".env")
 
-DATA_DIR = Path("data").resolve()
-OUT_PATH = Path("out") / "episodes.jsonl"
-ANSWER_KEY_PATH = Path("answer_key.jsonl").resolve()
+DATA_DIR = PROJECT_DIR / "data"
+OUT_PATH = PROJECT_DIR / "out" / "episodes.jsonl"
+SCORE_PATH = PROJECT_DIR / "out" / "scores.json"
+DEBUG_DIR = PROJECT_DIR / "out" / "debug"
+ANSWER_KEY_PATH = DATA_DIR / "answer_key.jsonl"
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_MODEL = "jev-latest"
-TYPESAFE_API_KEY = os.environ["TYPESAFE_API_KEY"]
+TYPESAFE_API_KEY = os.environ.get("TYPESAFE_API_KEY", "")
 OPENAI_URL = "https://api.openai.com/v1/responses"
 OPENAI_MODEL = "gpt-6.1-sol"
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_PRICE_PER_INPUT_TOKEN = 2.00 / 1_000_000
+OPENAI_PRICE_PER_OUTPUT_TOKEN = 10.00 / 1_000_000

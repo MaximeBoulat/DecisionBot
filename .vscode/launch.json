@@ -6,10 +6,17 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/src/main.py",
-            "console": "integratedTerminal",
+            "args": [
+                "--mode",
+                "shadow",
+                "--task-ids",
+                "1712",
+                "1810",
+                "--task-value-usd",
+                "1.0"
+            ],
             "cwd": "${workspaceFolder}",
-            "justMyCode": true,
-            "subProcess": false
+            "console": "integratedTerminal"
         }
     ]
 }
