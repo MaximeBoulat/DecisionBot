@@ -2,7 +2,7 @@
 
 A live agent that solves [DABstep](https://huggingface.co/datasets/adyen/DABstep) data-analysis tasks by making tool calls against the real payments dataset, with the choice of which tool to call next, and the value of each of its bounded arguments, delegated to a decision model (Jev) whenever Jev is confident enough — the agent's own generation model (Luna) only decides what Jev defers. This reproduces the tool-and-argument cascade from "JevAgentHarness: Benchmarking, Deploying and Training Decision Models That Share Control with LLMs" (Zhu et al.), using the DABstep benchmark's tasks, data and documentation as the test environment, and Jev as the decision model.
 
-DecisionBot's runs are scored against an independently computed answer key (`data/answer_key.jsonl`).
+DecisionBot's runs are scored against an independently computed answer key (`answer_key.jsonl`).
 
 ## Usage
 
