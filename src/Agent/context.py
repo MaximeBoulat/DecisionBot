@@ -27,6 +27,6 @@ class DecisionContext:
     @property
     def agent_trace(self) -> str:
         return "\n".join(
-            f"[step {s.index}] code:\n{s.code}\nstdout:\n{s.stdout}\nstderr:\n{s.stderr}"
+            f"[step {s.index}] tool: {s.tool_name}({s.tool_args})\nresult: {s.tool_result}"
             for s in self.history
         )

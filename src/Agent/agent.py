@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-from Agent.code_executor import CodeExecutor
 from Agent.context import DecisionContext
-from Agent.generator import CodeGenerationModel
+from Agent.generator import ActionModel
 from Agent.jev_decision_model import SystemOneDecisionModel
+from Agent.tools import ToolsLayer
 from models import AgentStep, DecisionQuestion, DecisionRequest, EpisodeResult, Task
 
 STOP_QUESTION = DecisionQuestion(
@@ -19,16 +17,16 @@ STOP_QUESTION = DecisionQuestion(
 class Agent:
     def __init__(
         self,
-        generator: CodeGenerationModel,
+        generator: ActionModel,
         decision_model: SystemOneDecisionModel,
-        executor: CodeExecutor,
+        tools: ToolsLayer,
         documentation: dict[str, str],
         stop_threshold: float = 0.5,
         max_steps: int = 15,
     ) -> None:
         self.generator = generator
         self.decision_model = decision_model
-        self.executor = executor
+        self.tools = tools
         self.documentation = documentation
         self.stop_threshold = stop_threshold
         self.max_steps = max_steps
@@ -53,14 +51,15 @@ class Agent:
                 if accepted:
                     return EpisodeResult(task.task_id, tuple(history), proposed.answer, True, None)
                 history.append(AgentStep(
-                    index, "", "", "stop rejected by jev", decided_by="jev",
+                    index, "stop_attempt", {}, "", decided_by="jev",
                     proposed_answer=proposed.answer, jev_confidence=confidence,
                 ))
                 continue
-            assert proposed.code is not None
-            print(f"  task {task.task_id} step {index + 1}/{self.max_steps}: executing code...")
-            stdout, stderr = self.executor.run(proposed.code)
-            print(f"  task {task.task_id} step {index + 1}/{self.max_steps}: "
-                  f"{'error' if stderr else 'ok'} ({len(stdout)} chars stdout)")
-            history.append(AgentStep(index, proposed.code, stdout, stderr, decided_by="llm"))
+            assert proposed.tool_name is not None
+            assert proposed.tool_args is not None
+            print(f"  task {task.task_id} step {index + 1}/{self.max_steps}: calling {proposed.tool_name}...")
+            result = self.tools.dispatch(proposed.tool_name, proposed.tool_args)
+            status = "error" if '"error"' in result else "ok"
+            print(f"  task {task.task_id} step {index + 1}/{self.max_steps}: {status} ({len(result)} chars result)")
+            history.append(AgentStep(index, proposed.tool_name, proposed.tool_args, result, decided_by="llm"))
         return EpisodeResult(task.task_id, tuple(history), None, False, "max steps exceeded")

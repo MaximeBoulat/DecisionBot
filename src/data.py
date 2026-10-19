@@ -42,6 +42,3 @@ class DabstepData:
 
     def load_documentation(self) -> dict[str, str]:
         return {name: (self.data_dir / "context" / name).read_text() for name in self.DOCS}
-
-    def data_file_paths(self) -> dict[str, Path]:
-        return {name: self.data_dir / "context" / name for name in self.DATA_FILES}

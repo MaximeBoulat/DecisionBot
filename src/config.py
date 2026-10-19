@@ -16,7 +16,6 @@ def _load_env(path: Path) -> None:
 _load_env(Path(".env"))
 
 DATA_DIR = Path("data").resolve()
-SCRATCH_DIR = Path("out") / "scratch"
 OUT_PATH = Path("out") / "episodes.jsonl"
 ANSWER_KEY_PATH = Path("answer_key.jsonl").resolve()
 JEV_URL = "https://api.typesafe.ai/v1/systemone"

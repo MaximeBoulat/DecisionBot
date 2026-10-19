@@ -16,10 +16,13 @@ flowchart TB
     Task["DABstep task"]
     subgraph Plane["DecisionBot — agent control plane"]
         subgraph Core["Core logic"]
-            AgentLoop["Agent orchestration<br/>propose, delegate, execute, loop"]
+            AgentLoop["Agent orchestration<br/>propose, delegate, dispatch, loop"]
             Context["Decision context<br/>task + step history + proposed answer"]
             StopQ["Stop-guard question"]
-            Executor["Code executor<br/>sandboxed subprocess"]
+            subgraph Tools["Tools layer — contracts and callable capabilities"]
+                QueryTool["query_transactions<br/>filter, group and aggregate payments.csv"]
+                FeesTool["compute_fees<br/>merchant-guide fee matching over fees.json"]
+            end
         end
         subgraph Boundary["Model boundary"]
             GenAPI["Generation-model invocation"]
@@ -32,14 +35,15 @@ flowchart TB
     Results[("Recorded episodes")]
     Start --> AgentLoop
     Task -->|"configures"| AgentLoop
-    Data -->|"question, docs, file paths"| AgentLoop
+    Data -->|"question, docs"| AgentLoop
     AgentLoop -->|"requests the next step"| GenAPI
     GenAPI -->|"calls"| OpenAI
-    OpenAI -->|"returns code or a proposed answer"| GenAPI
+    OpenAI -->|"returns a tool call or a proposed answer"| GenAPI
     GenAPI -->|"returns proposal"| AgentLoop
-    AgentLoop -->|"runs proposed code"| Executor
-    Executor -->|"executes against"| Data
-    Executor -->|"returns stdout/stderr"| AgentLoop
+    AgentLoop -->|"dispatches"| Tools
+    QueryTool -->|"reads"| Data
+    FeesTool -->|"reads"| Data
+    Tools -->|"result"| AgentLoop
     AgentLoop -->|"on a proposed finish, builds"| Context
     Context -->|"supplies evidence"| DecisionAPI
     StopQ -->|"defines the choice"| DecisionAPI
@@ -50,21 +54,21 @@ flowchart TB
     classDef core fill:#e8f0fe,stroke:#4267a9
     classDef boundary fill:#edf0f4,stroke:#63758a
     classDef external fill:#FFE4B5,stroke:#FF8C00
-    class AgentLoop,Context,StopQ,Executor core
+    class AgentLoop,Context,StopQ,QueryTool,FeesTool core
     class GenAPI,DecisionAPI boundary
     class OpenAI,Jev,Data external
     style Results fill:#E3F2FD
 ```
 
-The generation model (Sol) and the decision model (Jev) are invoked through the same kind of boundary but play different roles: Sol does the actual work — it is the only thing that writes code or proposes an answer, since Jev can only answer a typed question with a probability, never generate free text. Jev is asked exactly one question, only when Sol proposes to stop: given the task, the full step history and the proposed answer, is this actually finished and correct? The agent only accepts the stop when Jev's confidence clears the threshold; otherwise the episode continues.
+The generation model (Sol) and the decision model (Jev) are invoked through the same kind of boundary but play different roles: Sol does the actual work — it is the only thing that calls tools or proposes an answer, since Jev can only answer a typed question with a probability, never generate free text or choose a tool. The tools layer is two typed, fixed contracts: `query_transactions` filters and aggregates the raw transaction data, and `compute_fees` is a single verified implementation of the merchant guide's fee-matching rules, shared across every task. Jev is asked exactly one question, only when Sol proposes to stop: given the task, the full step history and the proposed answer, is this actually finished and correct? The agent only accepts the stop when Jev's confidence clears the threshold; otherwise the episode continues.
 
 ```mermaid
 flowchart TB
     Start@{ shape: start }
     Step["Generator proposes a step"]
     Decide{"Proposed action"}
-    RunCode["Execute code"]
-    Observe["Record stdout, stderr<br/>as a step, decided_by: llm"]
+    CallTool["Dispatch the tool call"]
+    Observe["Record result<br/>as a step, decided_by: llm"]
     BuildCtx["Build decision context<br/>from task, history, proposed answer"]
     AskJev["Ask Jev the stop-guard question"]
     JevDecide{"Jev confidence ≥ threshold?"}
@@ -74,11 +78,11 @@ flowchart TB
     Fail@{ shape: stop, label: "Episode failed<br/>no answer" }
     Start --> Step
     Step --> Decide
-    Decide -->|"run_code"| RunCode
-    RunCode --> Observe
+    Decide -->|"call_tool"| CallTool
+    CallTool --> Observe
     Observe --> MaxSteps
     Decide -->|"finish"| BuildCtx
-    BuildCtx --> AskJev 
+    BuildCtx --> AskJev
     AskJev --> JevDecide
     JevDecide -->|"yes"| Finish
     JevDecide -->|"no"| RecordReject
@@ -88,7 +92,7 @@ flowchart TB
     classDef core fill:#e8f0fe,stroke:#4267a9
     classDef gate fill:#fff2cc,stroke:#b58b24
     classDef terminal fill:#E3F2FD,stroke:#1565c0
-    class Step,RunCode,Observe,BuildCtx,AskJev,RecordReject core
+    class Step,CallTool,Observe,BuildCtx,AskJev,RecordReject core
     class Decide,JevDecide,MaxSteps gate
     class Finish,Fail terminal
 ```
@@ -125,7 +129,7 @@ Run from the project folder in a terminal:
    OPENAI_API_KEY=your-openai-key
    ```
 3. `uv sync` — creates `.venv` and installs the project.
-4. `uv run src/main.py` — fetches the DABstep data on first run, then runs the agent on one task end to end, printing the resulting `EpisodeResult` and appending it to `out/episodes.jsonl`.
+4. `uv run src/main.py` — fetches the DABstep data on first run, then runs the agent across all 450 tasks, printing per-task progress and a summary as each one finishes, appending every `EpisodeResult` to `out/episodes.jsonl`, and printing an aggregate summary across the whole run at the end.
 
 To run and debug it in VSCode instead: run `uv sync` once from the terminal first (VSCode doesn't do this for you), then open the Command Palette and run **Python: Select Interpreter**, choosing the `.venv` that `uv sync` just created. From there, open the Run and Debug panel and launch the **DecisionBot** configuration — it runs `src/main.py` the same way, with breakpoints available anywhere in the call chain.
 

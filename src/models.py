@@ -14,9 +14,9 @@ class Task:
 @dataclass(frozen=True)
 class AgentStep:
     index: int
-    code: str
-    stdout: str
-    stderr: str
+    tool_name: str
+    tool_args: dict
+    tool_result: str
     decided_by: Literal["llm", "jev"]
     proposed_answer: str | None = None
     jev_confidence: float | None = None
