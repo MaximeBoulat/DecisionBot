@@ -83,10 +83,11 @@ def main() -> None:
         data.fetch()
         tasks = list(data.load_tasks().values())
         if options.task_ids is not None:
-            requested = set(options.task_ids)
-            if requested - {task.task_id for task in tasks}:
-                parser.error("Unknown task IDs")
-            tasks = [task for task in tasks if task.task_id in requested]
+            by_id = {task.task_id: task for task in tasks}
+            unknown = [tid for tid in options.task_ids if tid not in by_id]
+            if unknown:
+                parser.error(f"Unknown task IDs: {unknown}")
+            tasks = [by_id[tid] for tid in options.task_ids]
         if profile and options.mode == "cascade":
             calibration_ids = set(profile["calibration_task_ids"])
             if options.task_ids and calibration_ids.intersection(options.task_ids):

@@ -144,14 +144,14 @@ class Agent:
                     if needs_generator:
                         events.append("Asking generator for " + ("answer..." if tool_name == "finish" else "deferred arguments..."))
                         llm_calls += 1
-                    print(f"Task {task_number}/{self.total_tasks} — step {index + 1}/{self.max_steps}: " + " ".join(events), end="", flush=True)
+                    print(f"Task {task.task_id} ({task_number}/{self.total_tasks}) — step {index + 1}/{self.max_steps}: " + " ".join(events), end="", flush=True)
                     line_started = True
                     events.clear()
                     proposed = self.generator.complete_step(task, tuple(history), tool_name, arguments, debug_log)
                 else:
                     events.append("Asking generator...")
                     llm_calls += 1
-                    print(f"Task {task_number}/{self.total_tasks} — step {index + 1}/{self.max_steps}: " + " ".join(events), end="", flush=True)
+                    print(f"Task {task.task_id} ({task_number}/{self.total_tasks}) — step {index + 1}/{self.max_steps}: " + " ".join(events), end="", flush=True)
                     line_started = True
                     events.clear()
                     proposed = self.generator.propose_step(task, tuple(history), debug_log)
@@ -224,10 +224,10 @@ class Agent:
                 history.append(AgentStep(index, tool_name, arguments, json.dumps({"error": error}), origin,
                                          error=error, decisions=tuple(decisions), argument_sources=sources))
                 debug_log.write("episode_error", step=index, error=error)
-                prefix = " Failed — " if line_started else f"Task {task_number}/{self.total_tasks} — step {index + 1}/{self.max_steps}: Failed — "
+                prefix = " Failed — " if line_started else f"Task {task.task_id} ({task_number}/{self.total_tasks}) — step {index + 1}/{self.max_steps}: Failed — "
                 print(prefix + " ".join(error.splitlines()), flush=True)
                 break
         if final_answer is None and error is None:
             error = "max steps exceeded"
-            print(f"Task {task_number}/{self.total_tasks}: Step limit reached.", flush=True)
+            print(f"Task {task.task_id} ({task_number}/{self.total_tasks}): Step limit reached.", flush=True)
         return final_answer, error, llm_calls, jev_calls
