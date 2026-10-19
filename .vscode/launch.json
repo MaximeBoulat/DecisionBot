@@ -9,11 +9,10 @@
             "args": [
                 "--mode",
                 "shadow",
-                "--task-ids",
-                "1712",
-                "1810",
                 "--task-value-usd",
-                "1.0"
+                "1.0",
+                "--limit",
+                "50"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal"

@@ -47,6 +47,7 @@ def main() -> None:
     parser.add_argument("--argument-threshold", type=float)
     parser.add_argument("--max-steps", type=int, default=15)
     parser.add_argument("--task-ids", type=int, nargs="+")
+    parser.add_argument("--limit", type=int, help="Run only the first N tasks (after any other task filtering).")
     parser.add_argument("--task-value-usd", type=float,
                         help="Dollar value of one correct task (V in the cascade's cost model). "
                              "Required in shadow mode; it labels shadow decisions, it is not measured.")
@@ -91,6 +92,10 @@ def main() -> None:
             if options.task_ids and calibration_ids.intersection(options.task_ids):
                 parser.error("Evaluation tasks must be separate from calibration tasks")
             tasks = [task for task in tasks if task.task_id not in calibration_ids]
+        if options.limit is not None:
+            if options.limit < 1:
+                parser.error("--limit must be positive")
+            tasks = tasks[:options.limit]
         documentation = data.load_documentation()
         generator = OpenAIActionModel(OPENAI_MODEL, OPENAI_API_KEY, documentation, OPENAI_URL)
         decision_model = SystemOneDecisionModel(JEV_MODEL, JEV_URL, api_key=TYPESAFE_API_KEY)

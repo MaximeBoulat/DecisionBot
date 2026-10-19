@@ -1,6 +1,6 @@
 # DecisionBot
 
-A live agent that solves [DABstep](https://huggingface.co/datasets/adyen/DABstep) data-analysis tasks by making tool calls against the real payments dataset, with the choice of which tool to call next, and the value of each of its bounded arguments, delegated to a decision model (Jev) whenever Jev is confident enough — the agent's own generation model (Sol) only decides what Jev defers. This reproduces the tool-and-argument cascade from "JevAgentHarness: Benchmarking, Deploying and Training Decision Models That Share Control with LLMs" (Zhu et al.), using the DABstep benchmark's tasks, data and documentation as the test environment, and Jev as the decision model.
+A live agent that solves [DABstep](https://huggingface.co/datasets/adyen/DABstep) data-analysis tasks by making tool calls against the real payments dataset, with the choice of which tool to call next, and the value of each of its bounded arguments, delegated to a decision model (Jev) whenever Jev is confident enough — the agent's own generation model (Luna) only decides what Jev defers. This reproduces the tool-and-argument cascade from "JevAgentHarness: Benchmarking, Deploying and Training Decision Models That Share Control with LLMs" (Zhu et al.), using the DABstep benchmark's tasks, data and documentation as the test environment, and Jev as the decision model.
 
 DecisionBot's runs are scored against an independently computed answer key (`data/answer_key.jsonl`).
 
@@ -29,7 +29,7 @@ flowchart TB
             DecisionAPI["Decision-model invocation"]
         end
     end
-    OpenAI["OpenAI — GPT-6.1 Sol"]
+    OpenAI["OpenAI — GPT-6 Luna"]
     Jev["Jev — decision model"]
     Data[("DABstep data<br/>tasks, manual, payments")]
     Results[("Recorded episodes")]
@@ -61,9 +61,9 @@ flowchart TB
     style Results fill:#E3F2FD
 ```
 
-The generation model (Sol) and the decision model (Jev) are invoked through the same kind of boundary but play different roles. At each step the cascade asks Jev which tool should be called next; if Jev's confidence on that choice clears the tool threshold, the choice is taken directly. For a chosen tool other than `finish`, the cascade separately asks Jev for the value of each bounded argument (one with a small, enumerable set of candidates drawn from the task and the step history), accepting each one whose confidence clears the argument threshold. Sol is only asked to decide what the cascade left open: the tool and arguments when Jev's tool confidence fell short, the remaining arguments when some were accepted and others were not, or the final answer text when the accepted choice is `finish`. The tools layer is three typed, fixed contracts: `query_transactions` and `compute_fees` cover filtering, aggregation and merchant-guide fee matching over the raw CSV/JSON files directly, and `query_data` runs one read-only SQL query over all of DABstep's tables for joins, percentiles and exact decimal arithmetic. Jev is never given a free-text channel — every judgment it returns is a probability over a small, enumerated set of options.
+The generation model (Luna) and the decision model (Jev) are invoked through the same kind of boundary but play different roles. At each step the cascade asks Jev which tool should be called next; if Jev's confidence on that choice clears the tool threshold, the choice is taken directly. For a chosen tool other than `finish`, the cascade separately asks Jev for the value of each bounded argument (one with a small, enumerable set of candidates drawn from the task and the step history), accepting each one whose confidence clears the argument threshold. Luna is only asked to decide what the cascade left open: the tool and arguments when Jev's tool confidence fell short, the remaining arguments when some were accepted and others were not, or the final answer text when the accepted choice is `finish`. The tools layer is three typed, fixed contracts: `query_transactions` and `compute_fees` cover filtering, aggregation and merchant-guide fee matching over the raw CSV/JSON files directly, and `query_data` runs one read-only SQL query over all of DABstep's tables for joins, percentiles and exact decimal arithmetic. Jev is never given a free-text channel — every judgment it returns is a probability over a small, enumerated set of options.
 
-The tool and argument thresholds are not hand-set. They come from a calibration profile fitted by `src/calibrate.py` on shadow-mode runs: in shadow mode, the cascade still asks Jev for every tool and argument judgment and records its choice and confidence, but Sol always decides the actual step regardless of Jev's confidence. Whenever Jev's recorded choice disagrees with Sol's actual choice, DecisionBot forks the episode — it forces Jev's choice for that one decision and lets a baseline (Sol-only) continuation finish the task — and grades both the real episode and the forced continuation against the answer key, giving each decision a measured correctness label for Jev and for Sol. Paired with the measured dollar cost of the generator call that decision would have needed and an explicit, business-supplied dollar value for a correct task, `calibrate.py` sorts these labeled decisions into confidence bins and fits the lowest confidence above which every higher bin still shows a non-negative expected advantage to trusting Jev — the same rule the paper's cascade uses to set its thresholds.
+The tool and argument thresholds are not hand-set. They come from a calibration profile fitted by `src/calibrate.py` on shadow-mode runs: in shadow mode, the cascade still asks Jev for every tool and argument judgment and records its choice and confidence, but Luna always decides the actual step regardless of Jev's confidence. Whenever Jev's recorded choice disagrees with Luna's actual choice, DecisionBot forks the episode — it forces Jev's choice for that one decision and lets a baseline (Luna-only) continuation finish the task — and grades both the real episode and the forced continuation against the answer key, giving each decision a measured correctness label for Jev and for Luna. Paired with the measured dollar cost of the generator call that decision would have needed and an explicit, business-supplied dollar value for a correct task, `calibrate.py` sorts these labeled decisions into confidence bins and fits the lowest confidence above which every higher bin still shows a non-negative expected advantage to trusting Jev — the same rule the paper's cascade uses to set its thresholds.
 
 ```mermaid
 flowchart TB
@@ -141,7 +141,7 @@ Run from the project folder in a terminal:
 5. To fit a calibration profile from shadow-mode runs, point `src/calibrate.py` at their debug logs:
    ```
    uv run src/calibrate.py <shadow-run>/debug/task_*.jsonl --output <profile.json> \
-     --generator-model gpt-6.1-sol --jev-model jev-latest
+     --generator-model gpt-6-luna --jev-model jev-latest
    ```
    The resulting profile can then be passed to a `cascade` run with `--calibration <profile.json>`.
 6. To grade a previously recorded `episodes.jsonl` without making any model calls, run `src/main.py --score-only <path>`.
