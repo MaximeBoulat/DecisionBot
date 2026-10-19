@@ -4,9 +4,42 @@ A live agent that solves [DABstep](https://huggingface.co/datasets/adyen/DABstep
 
 DecisionBot's runs are scored against an independently computed answer key (`data/answer_key.jsonl`).
 
+## Usage
+
+Run from the project folder in a terminal:
+
+1. `cd` into this repository.
+2. Create `.env` in the repository root (not committed — `.gitignore` excludes it) with:
+   ```
+   TYPESAFE_API_KEY=your-jev-key
+   OPENAI_API_KEY=your-openai-key
+   ```
+3. `uv sync` — creates `.venv` and installs the project.
+4. Run:
+   ```
+   uv run src/main.py --mode shadow --task-value-usd 1.0 --limit 5
+   ```
+   This runs the first 5 of DABstep's 450 tasks, fetching the DABstep data on first use and writing `run.json`, `episodes.jsonl`, a per-task debug log under `debug/`, and `scores.json` into a timestamped folder under `out/runs/`. Increase `--limit` to run more tasks.
+
+To run and debug the same thing in VSCode instead: run `uv sync` once from the terminal first (VSCode doesn't do this for you), then open the Command Palette and run **Python: Select Interpreter**, choosing the `.venv` that `uv sync` just created. From there, open the Run and Debug panel and launch the **DecisionBot** configuration — it runs the command above, with breakpoints available anywhere in the call chain.
+
+### Advanced usage
+
+- `--mode` can also be:
+  - `baseline` — the generator decides every step by itself; only `OPENAI_API_KEY` is required.
+  - `cascade` — Jev's accepted judgments bypass the generator; requires either `--calibration <profile.json>` from a prior fit, or explicit `--tool-threshold`/`--argument-threshold` values.
+- `--task-ids` restricts a run to specific DABstep task IDs instead of `--limit`'s first-N.
+- To fit a calibration profile from shadow-mode runs, point `src/calibrate.py` at their debug logs:
+  ```
+  uv run src/calibrate.py <shadow-run>/debug/task_*.jsonl --output <profile.json> \
+    --generator-model gpt-6-luna --jev-model jev-latest
+  ```
+  The resulting profile can then be passed to a `cascade` run with `--calibration <profile.json>`.
+- To grade a previously recorded `episodes.jsonl` without making any model calls, run `src/main.py --score-only <path>`.
+
 ## Architecture
 
-Two boundaries matter: the agent's own control plane, where a generation model and a decision model are both invoked but play different roles, and the Scorer, which is deliberately a separate system that never participates in solving a task — it only grades what the auv syncgent already recorded.
+Two boundaries matter: the agent's own control plane, where a generation model and a decision model are both invoked but play different roles, and the Scorer, which is deliberately a separate system that never participates in solving a task — it only grades what the agent already recorded.
 
 ### Agent
 
@@ -120,30 +153,3 @@ flowchart TB
 ```
 
 The Scorer is a separate system from the agent: it never runs a task, it only reads the episodes the agent already recorded and the answer key, and grades one against the other.
-
-## Usage
-
-Run from the project folder in a terminal:
-
-1. `cd` into this repository.
-2. Create `.env` in the repository root (not committed — `.gitignore` excludes it) with:
-   ```
-   TYPESAFE_API_KEY=your-jev-key
-   OPENAI_API_KEY=your-openai-key
-   ```
-3. `uv sync` — creates `.venv` and installs the project.
-4. Run `src/main.py` with `--mode` set to one of:
-   - `baseline` — the generator decides every step by itself; only `OPENAI_API_KEY` is required.
-   - `shadow` — the cascade asks Jev for every tool and argument judgment and records its choice, but the generator still decides every step; requires `--task-value-usd`, the dollar value assigned to one correct task, which drives the correctness labels this mode produces for calibration.
-   - `cascade` (default) — Jev's accepted judgments bypass the generator; requires either `--calibration <profile.json>` from a prior fit, or explicit `--tool-threshold`/`--argument-threshold` values.
-
-   Each run creates its own timestamped folder under `out/` (or the path given with `--output-dir`), fetching the DABstep data on first use and writing `run.json`, `episodes.jsonl`, a per-task debug log under `debug/`, and `scores.json` once every task has run. `--task-ids` restricts a run to specific DABstep task IDs.
-5. To fit a calibration profile from shadow-mode runs, point `src/calibrate.py` at their debug logs:
-   ```
-   uv run src/calibrate.py <shadow-run>/debug/task_*.jsonl --output <profile.json> \
-     --generator-model gpt-6-luna --jev-model jev-latest
-   ```
-   The resulting profile can then be passed to a `cascade` run with `--calibration <profile.json>`.
-6. To grade a previously recorded `episodes.jsonl` without making any model calls, run `src/main.py --score-only <path>`.
-
-To run and debug any of this in VSCode instead: run `uv sync` once from the terminal first (VSCode doesn't do this for you), then open the Command Palette and run **Python: Select Interpreter**, choosing the `.venv` that `uv sync` just created. From there, open the Run and Debug panel and launch the **DecisionBot** configuration, or add the arguments above to its `args` list in `.vscode/launch.json` — breakpoints are available anywhere in the call chain.
