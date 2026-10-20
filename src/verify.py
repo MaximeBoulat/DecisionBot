@@ -21,7 +21,7 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 
-from config import ANSWER_KEY_PATH
+from config import ANSWER_KEY_PATH, TYPESAFE_API_KEY
 from Scorer.scorer import Scorer
 from Scorer.step_labels import episode_points, label, seeds
 from Verifier.checkers import DecisionModelChecker, ReviewerChecker, VerdictCache
@@ -87,8 +87,10 @@ def cmd_tokens(a) -> None:
 def cmd_ask(a) -> None:
     run = Path(a.run_dir)
     labeled = {x["point_id"] for x in read_jsonl(run / "labels.jsonl") if x["label"] is not None}
-    points = [p for p in read_jsonl(run / "points.jsonl") if a.all or p["point_id"] in labeled]
-    checker = (DecisionModelChecker(a.model, a.url, a.timeout) if a.checker == "decision"
+    points = [p for p in read_jsonl(run / "points.jsonl") if (a.all or p["point_id"] in labeled)
+              and (a.split == "all" or p["task_id"] % 2 == (1 if a.split == "dev" else 0))]
+    api_key = TYPESAFE_API_KEY if "typesafe.ai" in a.url else None
+    checker = (DecisionModelChecker(a.model, a.url, a.timeout, api_key) if a.checker == "decision"
                else ReviewerChecker(a.model, a.url, a.timeout))
     cache = VerdictCache(run / "verdicts.jsonl")
     todo = [p for p in points if cache.get(p["point_id"], checker.name, questions_for(p["tool"]), p["state"]) is None]
@@ -239,6 +241,7 @@ def main() -> None:
     k.add_argument("--url", required=True)
     k.add_argument("--timeout", type=float, default=300)
     k.add_argument("--limit", type=int)
+    k.add_argument("--split", choices=["dev", "held-out", "all"], default="all")
     k.add_argument("--all", action="store_true", help="also ask about steps without an exact label")
     k.add_argument("--dry-run", action="store_true")
     r = sub.add_parser("report")

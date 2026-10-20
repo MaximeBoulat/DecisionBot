@@ -46,6 +46,25 @@ Every checker run starts with a canary request with a known answer and stops if 
 - **Seeded faults are simple and template-bound.** There are only 3 `quantity` seeds, too few to report.
 - A brief local test on this run checks the pipeline and gives a first look. Claims wait for fresh trajectories on the fixed tool.
 
+## Running the test
+
+The run data is `results/episodes.jsonl` (Max's 50-task shadow run, October 2026). The checks need a decision model behind a `/v1/systemone` endpoint and, for the reviewer, an OpenAI-compatible chat endpoint that returns `logprobs`. Neither one is started by the scripts.
+
+```sh
+uv sync
+R=out/verify/max-shadow-run
+uv run src/verify.py build --episodes results/episodes.jsonl --run-dir $R    # 399 points, 233 with labels
+
+# One checker at a time. --split dev|held-out|all, --limit N; reruns skip cached answers.
+uv run src/verify.py ask --run-dir $R --checker decision --model vLLM-d3-Q4_K_M --url http://127.0.0.1:8092/v1/systemone
+uv run src/verify.py ask --run-dir $R --checker decision --model jev-latest --url https://api.typesafe.ai/v1/systemone   # TYPESAFE_API_KEY in .env
+uv run src/verify.py ask --run-dir $R --checker reviewer --model Qwen3.8-27B --url http://127.0.0.1:9090/v1/chat/completions
+
+uv run src/verify.py report --run-dir $R    # no model calls
+```
+
+On macOS, keep the machine awake for the length of a run: `caffeinate -i -s -w <pid of the ask process>`. Progress is printed every 10 steps, and each answer is appended to `$R/verdicts.jsonl` as it arrives. `tokens --gguf <model.gguf>` counts state sizes exactly; it expects llama.cpp's `llama-tokenize` at the path set in `src/verify.py`.
+
 ## Changes after the first model run
 
 None yet.
