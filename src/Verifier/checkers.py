@@ -114,6 +114,60 @@ class ReviewerChecker:
         return answers, tokens
 
 
+class OpenAIReviewerChecker:
+    """An OpenAI model through the Responses API, such as the agent's own generator. Reasoning models do not
+    return token log-probabilities, so each step is one request whose strict JSON schema asks for a stated
+    probability for every option of every question. Stated probabilities are coarser than token ones."""
+
+    def __init__(self, model: str, url: str, api_key: str, timeout: float = 300) -> None:
+        self.model, self.url, self.timeout = model, url, timeout
+        self.headers = {"content-type": "application/json", "authorization": f"Bearer {api_key}"}
+        self.name = f"openai:{model}"
+
+    def _ask(self, state_text: str, questions: dict) -> dict[str, dict[str, float]]:
+        options = {name: list(q["criteria"]) if q["type"] == "choice" else ["yes", "no"] for name, q in questions.items()}
+        listing = "\n".join(
+            f"{name}: {q['instructions']}\n" + "\n".join(
+                f"  - {opt}: {q['criteria'][opt] if q['type'] == 'choice' else opt.capitalize()}" for opt in options[name])
+            for name, q in questions.items())
+        schema = {"type": "object", "additionalProperties": False, "required": list(options), "properties": {
+            name: {"type": "object", "additionalProperties": False, "required": opts,
+                   "properties": {opt: {"type": "number"} for opt in opts}} for name, opts in options.items()}}
+        body = post_json(self.url, {
+            "model": self.model,
+            "input": [{"role": "system", "content": REVIEWER_SYSTEM},
+                      {"role": "user", "content": f"{state_text}\n\nQUESTIONS:\n{listing}\n\nFor each question, give "
+                                                  "your probability for each option. Each question's probabilities sum to 1."}],
+            "text": {"format": {"type": "json_schema", "name": "verdicts", "schema": schema, "strict": True}},
+        }, self.headers, self.timeout)
+        text = next(c["text"] for item in body.get("output", []) if item.get("type") == "message"
+                    for c in item.get("content", []) if c.get("type") == "output_text")
+        raw, out = json.loads(text), {}
+        for name, opts in options.items():
+            values = {opt: max(float(raw[name][opt]), 0.0) for opt in opts}
+            total = sum(values.values())
+            if total <= 0:
+                raise ValueError(f"no probability given for {name}")
+            out[name] = {opt: v / total for opt, v in values.items()}
+        self.last_tokens = (body.get("usage") or {}).get("input_tokens")
+        return out
+
+    def canary(self) -> str:
+        p = self._ask(json.dumps({"message": CANARY_STATE}), {"department": {**CANARY_QUESTIONS["department"],
+                      "instructions": "Which team should handle `message`?"}})["department"]
+        if p["billing"] < 0.9:
+            raise RuntimeError(f"canary failed: billing = {p['billing']:.3f}")
+        return f"billing = {p['billing']:.3f}"
+
+    def ask(self, state: dict, questions: dict) -> tuple[dict, int | None]:
+        wired = wire(questions)
+        probabilities = self._ask("STATE:\n" + json.dumps(state, ensure_ascii=False), wired)
+        answers = {name: {"noul": p["yes"]} if wired[name]["type"] == "noul" else
+                   {"probabilities": p, "choice": max(p, key=p.get), "confidence": max(p.values())}
+                   for name, p in probabilities.items()}
+        return answers, self.last_tokens
+
+
 class VerdictCache:
     """Raw answers keyed by point, checker, question set and exact state; reruns make no requests."""
 

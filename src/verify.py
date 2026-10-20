@@ -21,10 +21,10 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 
-from config import ANSWER_KEY_PATH, TYPESAFE_API_KEY
+from config import ANSWER_KEY_PATH, JEV_URL, OPENAI_API_KEY, OPENAI_URL, TYPESAFE_API_KEY
 from Scorer.scorer import Scorer
 from Scorer.step_labels import episode_points, label, seeds
-from Verifier.checkers import DecisionModelChecker, ReviewerChecker, VerdictCache
+from Verifier.checkers import DecisionModelChecker, OpenAIReviewerChecker, ReviewerChecker, VerdictCache
 from Verifier.questions import flag_score, questions_for
 from Verifier.state import STATE_VERSION, build_state
 
@@ -89,14 +89,23 @@ def cmd_ask(a) -> None:
     labeled = {x["point_id"] for x in read_jsonl(run / "labels.jsonl") if x["label"] is not None}
     points = [p for p in read_jsonl(run / "points.jsonl") if (a.all or p["point_id"] in labeled)
               and (a.split == "all" or p["task_id"] % 2 == (1 if a.split == "dev" else 0))]
-    api_key = TYPESAFE_API_KEY if "typesafe.ai" in a.url else None
-    checker = (DecisionModelChecker(a.model, a.url, a.timeout, api_key) if a.checker == "decision"
-               else ReviewerChecker(a.model, a.url, a.timeout))
+    if a.checker == "decision":
+        url = a.url or JEV_URL
+        checker = DecisionModelChecker(a.model, url, a.timeout, TYPESAFE_API_KEY if "typesafe.ai" in url else None)
+    elif a.checker == "openai":
+        if not OPENAI_API_KEY:
+            sys.exit("OPENAI_API_KEY is not set (.env)")
+        checker = OpenAIReviewerChecker(a.model, a.url or OPENAI_URL, OPENAI_API_KEY, a.timeout)
+    else:
+        if not a.url:
+            sys.exit("--url is required for a local reviewer")
+        checker = ReviewerChecker(a.model, a.url, a.timeout)
     cache = VerdictCache(run / "verdicts.jsonl")
     todo = [p for p in points if cache.get(p["point_id"], checker.name, questions_for(p["tool"]), p["state"]) is None]
+    cached = len(points) - len(todo)
     if a.limit:
         todo = todo[:a.limit]
-    print(f"{checker.name}: {len(points) - len(todo)} cached, {len(todo)} to ask")
+    print(f"{checker.name}: {cached} cached, {len(todo)} to ask")
     if a.dry_run:
         for p in todo[:2]:
             print(json.dumps({k: v for k, v in p["state"].items() if k != "documentation"}, indent=1)[:3000])
@@ -236,9 +245,11 @@ def main() -> None:
     t.add_argument("--context", type=int, default=16384)
     k = sub.add_parser("ask")
     k.add_argument("--run-dir", required=True)
-    k.add_argument("--checker", choices=["decision", "reviewer"], required=True)
+    k.add_argument("--checker", choices=["decision", "openai", "reviewer"], required=True,
+                   help="decision: a /v1/systemone model (Jev by default); openai: an OpenAI model through the "
+                        "Responses API (Luna); reviewer: a local chat model scored by token log-probabilities")
     k.add_argument("--model", required=True)
-    k.add_argument("--url", required=True)
+    k.add_argument("--url", help="defaults to Jev's or OpenAI's URL from config.py")
     k.add_argument("--timeout", type=float, default=300)
     k.add_argument("--limit", type=int)
     k.add_argument("--split", choices=["dev", "held-out", "all"], default="all")
