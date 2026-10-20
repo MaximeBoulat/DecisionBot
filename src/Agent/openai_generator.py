@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import urllib.request
 import time
 
 from Agent.arguments import matches, merge_arguments, missing_schema
 
 from Agent.generator import ProposedStep
+from Agent.retry import post_json
 from Agent.tools import TOOLS_SCHEMA
 from debug_log import DebugLog
 from models import AgentStep, Task
@@ -66,13 +66,11 @@ class OpenAIActionModel:
     def _request(self, payload: dict, history: tuple[AgentStep, ...], debug_log: DebugLog) -> ProposedStep:
         debug_log.write("llm_request", step=len(history), payload=payload)
         started = time.perf_counter()
-        req = urllib.request.Request(
-            self.base_url,
-            data=json.dumps(payload).encode(),
-            headers={"content-type": "application/json", "authorization": f"Bearer {self.api_key}"},
+        body = post_json(
+            self.base_url, payload,
+            {"content-type": "application/json", "authorization": f"Bearer {self.api_key}"},
+            self.timeout, on_retry=lambda **retry: debug_log.write("http_retry", step=len(history), **retry),
         )
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            body = json.loads(r.read())
         debug_log.write("llm_response", step=len(history), body=body, elapsed_seconds=time.perf_counter() - started)
         usage = body.get("usage")
         for item in body.get("output", []):

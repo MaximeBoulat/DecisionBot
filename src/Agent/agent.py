@@ -161,7 +161,7 @@ class Agent:
                     print(flush=True)
                     tool_saved_cost = generator_call_cost(proposed.usage)
                     tool_agrees = tool_decision.choice == tool_name
-                    tool_jev_correct = None if tool_agrees else self._fork_tool(
+                    tool_jev_correct = None if tool_agrees or tool_decision.error else self._fork_tool(
                         task, history, tool_decision.choice, debug_log, task_number)
                     shadow_pairs.append({
                         "task_id": task.task_id, "step": index, "point": "tool",
@@ -181,7 +181,7 @@ class Agent:
                             decisions.append(record)
                             jev_calls += 1
                             llm_value = get_value(arguments, candidate.path)
-                            if record.choice == "other":
+                            if record.choice == "other" or record.error:
                                 arg_jev_correct = None
                             else:
                                 arg_agrees = candidate.values.get(record.choice) == llm_value
