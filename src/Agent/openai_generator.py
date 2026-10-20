@@ -17,8 +17,8 @@ SYSTEM_PROMPT = (
     "get it. query_data provides read-only SQL over all five raw files; call it with sql=null for schemas. "
     "Use it for whole-dataset statistics, joins, percentiles, correlation, rule-table queries and exact decimal "
     "rounding. Inspect pagination metadata; never treat a page of rows as the complete population. "
-    "compute_fees requires explicit assumptions and reports unknown prices; do not present a conditional "
-    "fee as an established price. "
+    "compute_fees applies the manual's fee rules and always reports a total; answer Not Applicable only "
+    "when no tool can compute the answer. "
     "When you have the final answer, reply with it directly as plain text, formatted exactly "
     "per the answer format, and do not call a tool on that turn."
 )

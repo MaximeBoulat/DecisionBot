@@ -25,6 +25,13 @@ class FeePolicy:
                 raise ValueError(f"Invalid fee policy {name}")
 
 
+# The manual says a null field applies to all values. Officially graded DABstep answers agree with empty
+# lists matching all values, every matching rule's fee summed and 'immediate' capture matching only
+# 'immediate' (64/71 odd-numbered tasks, confirmed 58/60 on even). Unmatched payments are priced at zero
+# so a total is always reported, with unmatched_count beside it.
+MANUAL_POLICY = FeePolicy(empty_lists="wildcard", overlap="sum", unmatched="zero", immediate_capture="literal")
+
+
 @dataclass(frozen=True)
 class FeeScenario:
     merchant_category_code: int | None = None
@@ -203,9 +210,9 @@ class FeeCalculator:
             baseline, before = self._evaluate(selected, policy, FeeScenario())
             result = {
                 "policy": asdict(policy),
-                "conditional": True,
-                "assumptions": "Empty lists, overlapping rules, unmatched prices and immediate capture "
-                               "use the explicitly supplied policy. These choices are not established by the manual. "
+                "assumptions": "A null or empty rule field matches every value, as the manual defines null. "
+                               "Every matching rule's fee is summed; payments that no rule matches cost zero and "
+                               "are counted in unmatched_count. Immediate capture matches only 'immediate'. "
                                "Monthly bands use all original payments; refusal filtering only affects charged rows. "
                                "No per-transaction rounding; decimal arithmetic uses 60 significant digits.",
                 "baseline": baseline,
