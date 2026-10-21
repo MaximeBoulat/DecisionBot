@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from Agent.fee_calculator import FeeCalculator, FeePolicy, FeeScenario
+from Agent.fee_calculator import MANUAL_POLICY, FeeCalculator, FeeScenario
 from Agent.query_data import DataQuery
 from Agent.tool_schemas import TOOLS_SCHEMA
 
@@ -126,13 +126,13 @@ class ToolsLayer:
 
     def _compute_fees(self, merchant: str | None, year: int, month: int | None,
                       day_of_year_min: int | None, day_of_year_max: int | None,
-                      card_scheme: str | None, exclude_refused: bool, policy: dict,
+                      card_scheme: str | None, exclude_refused: bool,
                       scenario: dict | None, offset: int = 0, limit: int = 300) -> dict:
         if offset < 0 or not 1 <= limit <= 500:
             raise ValueError("Invalid pagination")
         selected = self._filtered(merchant, year, month, day_of_year_min, day_of_year_max,
                                   card_scheme=card_scheme, exclude_refused=exclude_refused)
         return self.fee_calculator.compute(
-            selected, FeePolicy(**policy), FeeScenario(**scenario) if scenario is not None else None,
+            selected, MANUAL_POLICY, FeeScenario(**scenario) if scenario is not None else None,
             offset, limit,
         )

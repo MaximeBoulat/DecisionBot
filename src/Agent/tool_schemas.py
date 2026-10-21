@@ -26,13 +26,6 @@ AGGREGATE_SCHEMA = object_schema({
 })
 AGGREGATE_SCHEMA["type"] = ["object", "null"]
 
-POLICY_SCHEMA = object_schema({
-    "empty_lists": {"type": "string", "enum": ["wildcard", "match_nothing"]},
-    "overlap": {"type": "string", "enum": ["sum", "mean", "min", "max", "error"]},
-    "unmatched": {"type": "string", "enum": ["unknown", "zero", "error"]},
-    "immediate_capture": {"type": "string", "enum": ["literal", "zero_days"]},
-})
-
 SCENARIO_SCHEMA = object_schema({
     "merchant_category_code": nullable("integer"),
     "account_type": nullable("string", "Replace the merchant's account type."),
@@ -80,11 +73,11 @@ TOOLS_SCHEMA = [
              "limit": {"type": "integer", "minimum": 1, "maximum": 500},
          }),
     tool("compute_fees",
-         "Compute observed-payment fees with explicit interpretation policy. Null merchant/month selects all "
+         "Compute observed-payment fees under the manual's rules. Null merchant/month selects all "
          "merchants/the full year; monthly bands always use each original full merchant/calendar month. "
          "Returns baseline, scenario and new-minus-old delta using decimal arithmetic. "
-         "Policy choices are assumptions: the manual does not define empty lists, rule overlap or unmatched "
-         "prices. unmatched=unknown keeps total null if any payment lacks a rule. "
+         "A null or empty rule field matches every value; every matching rule's fee is summed; payments "
+         "no rule matches cost zero and are counted in unmatched_count. "
          "Provides coverage counts, matched IDs and affected merchants. All summaries cover the full selection; "
          "only transaction details are paginated. Scenario changes do not predict altered fraud incidence.",
          {
@@ -95,7 +88,6 @@ TOOLS_SCHEMA = [
              "day_of_year_max": nullable("integer"),
              "card_scheme": nullable("string", "Filter original payments; scenario.card_scheme changes them."),
              "exclude_refused": {"type": "boolean"},
-             "policy": POLICY_SCHEMA,
              "scenario": SCENARIO_SCHEMA,
              "offset": {"type": "integer", "minimum": 0},
              "limit": {"type": "integer", "minimum": 1, "maximum": 500},
