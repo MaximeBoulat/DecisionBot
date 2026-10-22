@@ -1,0 +1,5 @@
+{
+  "19": {"reading": "annual_volume_ratio", "evidence": "The one leaderboard answer Adyen scored right (of four agents in dabstep-blindspots) matches this reading and not the mean of monthly ratios."},
+  "49": {"reading": "fraud_volume_rate", "evidence": "The one leaderboard answer Adyen scored right matches the fraud rate by volume (B. BE), not the fraud count or total fraud volume (A. NL)."},
+  "1443": {"reading": "empty_lists_wildcard__highest_single", "evidence": "Three leaderboard answers Adyen scored right match the highest single fee, not the mean; empty lists as wildcards is the manual reading the scorer already uses."}
+}
