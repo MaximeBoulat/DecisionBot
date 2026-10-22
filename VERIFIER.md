@@ -43,9 +43,8 @@ Questions with a missing-evidence case have a "not applicable" or "not observabl
 **Labels (which steps are wrong).** Labels are made separately and never shown to a checker:
 - **Final answers** are graded by the Scorer against the answer key.
 - **`compute_fees` calls** on the 13 fee question templates are checked against the arguments the question implies: merchant, period, filters and any hypothetical change.
-- **Seeded faults** are copies of correct steps with one known fault: the wrong period, the wrong merchant, an extra filter or the wrong hypothetical change (calls); "Not Applicable" or the wrong reported quantity (answers).
 
-SQL queries (`query_data`) have no exact label and are skipped by default. That leaves 233 labeled steps: 45 natural fee calls, 38 natural answers, 134 seeded call faults and 16 seeded answer faults.
+Every labeled step is one the agent actually took; the verifier plants no errors of its own. SQL queries (`query_data`) have no exact label and are skipped by default. In Max's first run that leaves 83 labeled steps: 45 fee calls and 38 answers.
 
 **Checkers.** Each one answers the same questions about the same states, and each answer becomes a probability that the step is wrong:
 - **Jev** gets one request per step with every question in it, and returns a probability per option.
@@ -74,7 +73,7 @@ R=out/verify/max-shadow-run
 # 1. Turn the recorded run into steps, states and labels. No model calls.
 uv run src/verify.py build --episodes results/episodes.jsonl --run-dir $R
 
-# 2. Ask each checker about the 233 labeled steps.
+# 2. Ask each checker about the labeled steps.
 uv run src/verify.py ask --run-dir $R --checker decision --model jev-latest     # Jev, JEV_URL in config.py
 uv run src/verify.py ask --run-dir $R --checker openai --model gpt-6-luna --effort medium   # Luna, OPENAI_URL in config.py
 
@@ -91,7 +90,7 @@ What to expect:
 - **Pin Luna's reasoning effort** with `--effort`. The effort becomes part of the checker's name (`openai:gpt-6-luna@medium`), so answers at different efforts are never mixed, and the canary stops the run if the response reports a different effort.
 - **Repeat a run in a new directory.** A rerun in the same directory replays the cache. Copy `points.jsonl` and `labels.jsonl` into a new directory, run `ask` there, and pass every run's file to the report: `report --run-dir $R --verdicts $R/verdicts.jsonl $R2/verdicts.jsonl`. Each step's score is averaged across runs, and each line also shows the lowest and highest single-run AUC. Luna's answers changed noticeably between two identical runs, so plan on three Luna runs.
 - **Requests are sequential.** Plan on tens of minutes per checker.
-- **Cost.** At the prices in `config.py` ($0.10 per million input tokens and $0.50 per million output tokens), Luna's 233 steps are about 1.9 million input tokens, around $0.20 plus output and reasoning tokens. Jev's price is not recorded here.
+- **Cost.** At the prices in `config.py` ($0.10 per million input tokens and $0.50 per million output tokens), a step is about 8,000 input tokens, so Luna's 83 steps on the first run are about $0.07 plus output and reasoning tokens. Jev's price is not recorded here.
 - **On macOS, keep the machine awake** for the length of a run: `caffeinate -i -s -w <pid of the ask process>`.
 
 **Local models (optional).** Any decision model behind a `/v1/systemone` endpoint works with `--checker decision --url <endpoint>`. Any OpenAI-compatible chat endpoint that returns `logprobs` works with `--checker reviewer --url <endpoint>`; it is scored from token log-probabilities, with thinking off. For example, with this project's llama.cpp router and llama-swap:
@@ -107,10 +106,9 @@ Every state is under 11.1k tokens (d3 tokenizer), which fits Jev's 32k state lim
 
 `report` prints one block per group of steps, for development and held-out tasks separately:
 
-- **natural calls**: the agent's own tool calls, wrong or correct as recorded.
-- **natural answers, give-ups excluded**: the agent's own final answers other than "Not Applicable". This is where a checker has to judge an answer; give-ups are caught by `rule:not_applicable`.
-- **natural give-ups**: final answers of "Not Applicable". In Max's run all of them are wrong, so the group has no correct steps and no AUC.
-- **seeded calls** and **seeded answers**: the seeded faults against the correct steps they were copied from, overall and then for each fault type (`period`, `merchant`, `filter`, `change`, `give_up`, `quantity`).
+- **calls**: the agent's tool calls, wrong or correct as recorded.
+- **answers, give-ups excluded**: final answers other than "Not Applicable". This is where a checker has to judge an answer; give-ups are caught by `rule:not_applicable`.
+- **give-ups**: final answers of "Not Applicable". In Max's first run all of them are wrong, so the group has no correct steps and no AUC.
 
 Each line is one checker and question, or a checker's `mean` or `max` across its questions, followed by:
 - **AUC:** the chance that a randomly chosen wrong step gets a higher flag than a randomly chosen correct one. 0.5 is chance, and 1.0 is perfect separation.
@@ -122,15 +120,14 @@ A split with fewer than 5 wrong steps is marked "too few to report" and has no l
 
 The `rule:` lines are the no-model baselines on the same steps. For a checker to be useful it must beat them, not just beat 0.5.
 
-The next block gives **held-out catches**. For calls and for answers separately, each checker's score is the question, `mean` or `max` with the best development AUC. Its threshold is the lowest score that flags at most 10% of correct development steps; a step is flagged at or above it. The line shows the false-alarm rate the threshold reaches on development and held-out steps, and how many held-out wrong steps it catches: natural steps other than give-ups, natural give-ups, and seeded faults. A threshold of `inf` means ties at the top made 10% unreachable, so nothing is flagged.
+The next block gives **held-out catches**. For calls and for answers separately, each checker's score is the question, `mean` or `max` with the best development AUC. Its threshold is the lowest score that flags at most 10% of correct development steps; a step is flagged at or above it. The line shows the false-alarm rate the threshold reaches on development and held-out steps, and how many held-out wrong steps it catches: steps other than give-ups, and give-ups. A threshold of `inf` means ties at the top made 10% unreachable, so nothing is flagged.
 
-The last lines are about **shared misses**, for each pair of model checkers and each of those three pools: how many held-out wrong steps each misses, how many both miss, and the number expected if their misses were independent. Both missing far more often than expected is a shared blind spot. Pools under 10 wrong steps are marked and not interpreted.
+The last lines are about **shared misses**, for each pair of model checkers and each of those two pools: how many held-out wrong steps each misses, how many both miss, and the number expected if their misses were independent. Both missing far more often than expected is a shared blind spot. Pools under 10 wrong steps are marked and not interpreted.
 
 ## Limits of this run
 
 - **Max's run was recorded before the fee-tool fix**, so the states show the old `policy` argument and null totals.
-- **The agent's own errors in this run are shallow.** All 4 wrong natural fee calls exclude refused payments, which `rule:exclusion` catches perfectly. Most of the 16 wrong natural answers are "Not Applicable", which `rule:not_applicable` mostly catches. The test of judgment is the seeded faults: the period, merchant and change faults are invisible to the rules.
-- **The seeded faults are simple and tied to the fee templates.** There are only 3 `quantity` seeds, too few to report.
+- **The agent's own errors in this run are shallow.** All 4 wrong natural fee calls exclude refused payments, which `rule:exclusion` catches perfectly. Most of the 16 wrong natural answers are "Not Applicable", which `rule:not_applicable` mostly catches. Later runs on the dabstep-blindspots tasks have more errors of the agent's own, several identical to leaderboard agents' wrong answers.
 - **This run checks the method and gives a first look.** Claims wait for fresh trajectories recorded with the fixed fee tool.
 
 ---
@@ -194,3 +191,4 @@ Every checker run starts with a canary request with a known answer and stops if 
   - **Small groups.** Lines with fewer than 5 wrong steps are no longer printed.
   - **`rule:scope`.** A no-model baseline that compares the merchant, month, day, fee ID, rate and MCC named in the question with the call's arguments. It scores 1.00 on every seeded call fault, so those seeds measure whether a question is sensitive, not whether a checker adds to code.
   - **Repeated runs.** Luna's AUCs moved by a median of 0.04 between two identical runs (Jev's by 0.004), which the task-resampled intervals do not show. `report` now averages several verdict files and prints the single-run range. Luna's reasoning effort is pinned with `--effort` and is part of the checker name.
+- October 22, 2026: **seeded faults removed.** `build` no longer copies correct steps with a planted fault, and `report` scores only steps the agent took (in an older run directory, seeded points are skipped). The seeds measured whether a question reacts to an obvious fault, and `rule:scope` showed code catches all of them, so they could not show a checker adding judgment, and their lines in the report drew attention from the agent's own errors. What the verifier is for is whether checkers miss the same errors agents make, and that needs the agent's own errors: the October 20 and 21 runs on the dabstep-blindspots tasks have them, several identical to leaderboard agents' wrong answers. The registered plan above still describes seeds; this entry supersedes those parts.
