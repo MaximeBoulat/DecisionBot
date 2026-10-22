@@ -42,14 +42,16 @@ class OpenAIActionModel:
     def _task_prompt(self, task: Task) -> str:
         docs = "\n\n".join(f"# {name}\n{text}" for name, text in self.documentation.items())
         return (
-            f"{SYSTEM_PROMPT}\n\n"
             f"Documentation:\n{docs}\n\n"
             f"Question: {task.question}\n"
             f"Answer format: {task.answer_format}"
         )
 
     def _input(self, task: Task, history: tuple[AgentStep, ...]) -> list[dict]:
-        items: list[dict] = [{"role": "user", "content": self._task_prompt(task)}]
+        items: list[dict] = [
+            {"role": "developer", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": self._task_prompt(task)},
+        ]
         for s in history:
             call_id = f"call_{s.index}"
             items.append({"type": "function_call", "call_id": call_id, "name": s.tool_name,
