@@ -15,6 +15,7 @@ import argparse
 import json
 import random
 import re
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -23,13 +24,14 @@ from pathlib import Path
 
 from config import ANSWER_KEY_PATH, JEV_URL, OPENAI_API_KEY, OPENAI_URL, TYPESAFE_API_KEY
 from Scorer.scorer import Scorer
-from Scorer.step_labels import episode_points, label, seeds
+from Scorer.step_labels import MERCHANTS, MONTHS, episode_points, label, seeds
 from Verifier.checkers import DecisionModelChecker, OpenAIReviewerChecker, ReviewerChecker, VerdictCache
 from Verifier.questions import flag_score, questions_for
 from Verifier.state import STATE_VERSION, build_state
 
 TOKENIZE = Path.home() / "AI/llama.cpp-pr29030-v070/build/bin/llama-tokenize"
-FALSE_ALARM = 0.10      # held-out misses are counted at the threshold that flags 10% of correct dev steps
+FALSE_ALARM = 0.10      # thresholds flag at most this share of correct dev steps
+MIN_WRONG = 5           # AUC lines with fewer wrong steps are not printed
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -95,7 +97,7 @@ def cmd_ask(a) -> None:
     elif a.checker == "openai":
         if not OPENAI_API_KEY:
             sys.exit("OPENAI_API_KEY is not set (.env)")
-        checker = OpenAIReviewerChecker(a.model, a.url or OPENAI_URL, OPENAI_API_KEY, a.timeout)
+        checker = OpenAIReviewerChecker(a.model, a.url or OPENAI_URL, OPENAI_API_KEY, a.timeout, a.effort)
     else:
         if not a.url:
             sys.exit("--url is required for a local reviewer")
@@ -145,45 +147,102 @@ def auc_ci(rows: list[tuple[int, float, bool]], reps: int = 1000) -> tuple:
     return point, ci
 
 
+def given_up(p: dict) -> bool:
+    return p["tool"] == "finish" and p["state"]["proposed_step"]["final_answer"].strip().lower() in ("", "not applicable")
+
+
+def scope_fault(question: str, args: dict) -> bool:
+    """Merchant, month, day, fee ID, rate or MCC named in the question but not matched by the arguments, read from
+    words in the question rather than its template; or any exclusion filter."""
+    named = [m for m in MERCHANTS if m in question]
+    if (named and args.get("merchant") not in named) or (not named and args.get("merchant")):
+        return True
+    months = [MONTHS[w] for w in re.findall(r"[A-Z][a-z]+", question) if w in MONTHS]
+    day = re.search(r"(\d+)(?:st|nd|rd|th) of the year", question)
+    lo, month = args.get("day_of_year_min"), args.get("month")
+    if day and (lo, args.get("day_of_year_max")) != (int(day[1]), int(day[1])):
+        return True
+    if months and ((month is not None and month != months[0]) or (month is None and lo is None)):
+        return True
+    if not months and not day and (month is not None or lo is not None):
+        return True
+    scenario = args.get("scenario") or {}
+    for pattern, key in ((r"ID ?=? ?(\d+)", "fee_rule_id"), (r"changed to (\d+)", "rate"),
+                         (r"MCC code to (\d+)", "merchant_category_code")):
+        m = re.search(pattern, question)
+        if m and key in scenario and scenario[key] != int(m[1]):
+            return True
+    return bool(args.get("exclude_refused") or args.get("card_scheme"))
+
+
 def rule_scores(p: dict) -> dict[str, float]:
     """No-model baselines, computed from the state alone."""
     proposed = p["state"]["proposed_step"]
     if proposed["kind"] == "final_answer":
-        answer = proposed["final_answer"].strip().lower()
-        return {"rule:not_applicable": float(answer in ("", "not applicable")),
+        return {"rule:not_applicable": float(given_up(p)),
                 "rule:unsourced": float(any("does not appear" in f or "contains no number" in f
                                             for f in p["state"]["facts"]))}
     args = proposed["arguments"]
     sql = str(args.get("sql") or "").lower()
-    return {"rule:exclusion": float(bool(args.get("exclude_refused") or args.get("exclude_fraudulent")
-                                         or args.get("card_scheme") or re.search(r"refused|fraud", sql)))}
+    rules = {"rule:exclusion": float(bool(args.get("exclude_refused") or args.get("exclude_fraudulent")
+                                          or args.get("card_scheme") or re.search(r"refused|fraud", sql)))}
+    if p["tool"] == "compute_fees":
+        rules["rule:scope"] = float(scope_fault(p["state"]["question"], args))
+    return rules
+
+
+def checker_scores(path: Path, points: dict, labels: dict) -> dict:
+    """(checker, question) -> point_id -> flag score for one verdicts file, plus each checker's mean and max."""
+    scores = defaultdict(dict)
+    for row in read_jsonl(path):
+        p = points.get(row["point_id"])
+        if "answers" not in row or p is None or row["point_id"] not in labels:
+            continue
+        flags = []
+        for name, q in questions_for(p["tool"]).items():
+            if name == "quantity" and given_up(p):
+                continue    # 'not_observable' is the right reply to a give-up
+            s = flag_score(q, row["answers"].get(name, {}), p["state"]["proposed_step"].get("final_answer"))
+            if s is not None:
+                scores[(row["checker"], name)][row["point_id"]] = s
+                flags.append(s)
+        if flags:
+            scores[(row["checker"], "mean")][row["point_id"]] = statistics.mean(flags)
+            scores[(row["checker"], "max")][row["point_id"]] = max(flags)
+    return scores
+
+
+def threshold(table: dict[str, float], ok_ids: list[str]) -> tuple[float, float]:
+    """The lowest score that flags at most FALSE_ALARM of the given correct steps (a step is flagged when its score
+    is at or above it), and the share it does flag. Ties at the top can make the target unreachable: then nothing
+    is flagged."""
+    ok = [table[i] for i in ok_ids if i in table]
+    for t in sorted(set(table.values())) + [float("inf")]:
+        fpr = sum(v >= t for v in ok) / len(ok)
+        if fpr <= FALSE_ALARM:
+            return t, fpr
+    return float("inf"), 0.0
 
 
 def cmd_report(a) -> None:
     run = Path(a.run_dir)
     points = {p["point_id"]: p for p in read_jsonl(run / "points.jsonl")}
     labels = {x["point_id"]: x["label"] for x in read_jsonl(run / "labels.jsonl") if x["label"] is not None}
-    scores = defaultdict(dict)      # (checker, question) -> point_id -> score
-    for row in read_jsonl(run / "verdicts.jsonl"):
-        p = points.get(row["point_id"])
-        if "answers" not in row or p is None or row["point_id"] not in labels:
-            continue
-        questions = questions_for(p["tool"])
-        answer = p["state"]["proposed_step"].get("final_answer")
-        flags = []
-        for name, q in questions.items():
-            s = flag_score(q, row["answers"].get(name, {}), answer)
-            if s is not None:
-                scores[(row["checker"], name)][row["point_id"]] = s
-                flags.append(s)
-        if flags:
-            scores[(row["checker"], "any")][row["point_id"]] = max(flags)
+    runs = [checker_scores(Path(f), points, labels) for f in (a.verdicts or [run / "verdicts.jsonl"])]
+    scores = defaultdict(dict)      # (checker, question) -> point_id -> score, averaged over runs
+    for key in {k for r in runs for k in r}:
+        for pid in {pid for r in runs for pid in r.get(key, {})}:
+            scores[key][pid] = statistics.mean(r[key][pid] for r in runs if pid in r.get(key, {}))
     for pid in labels:
         for name, s in rule_scores(points[pid]).items():
             scores[(name, "rule")][pid] = s
+    wrong = lambda pid: labels[pid] == "wrong"
+    dev = lambda pid: points[pid]["task_id"] % 2 == 1
+    natural = lambda p: p["provenance"] == "natural"
     groups = {
-        "natural calls": lambda p: p["provenance"] == "natural" and p["tool"] != "finish",
-        "natural answers": lambda p: p["provenance"] == "natural" and p["tool"] == "finish",
+        "natural calls": lambda p: natural(p) and p["tool"] != "finish",
+        "natural answers, give-ups excluded": lambda p: natural(p) and p["tool"] == "finish" and not given_up(p),
+        "natural give-ups (answers that are 'Not Applicable')": lambda p: natural(p) and given_up(p),
         "seeded calls": lambda p: p["tool"] != "finish",
         "seeded answers": lambda p: p["tool"] == "finish",
     }
@@ -191,6 +250,8 @@ def cmd_report(a) -> None:
         is_answer = kind in ("give_up", "quantity")
         groups[f"seeded {'answers' if is_answer else 'calls'}: {kind}"] = \
             lambda p, k=kind, a=is_answer: (p["tool"] == "finish") == a and p["seed"] in (None, k)
+    if len(runs) > 1:
+        print(f"Scores are averaged over {len(runs)} runs; 'runs' gives the lowest and highest single-run AUC.")
     report = {}
     for group, member in groups.items():
         seeded = group.startswith("seeded")
@@ -198,38 +259,71 @@ def cmd_report(a) -> None:
         for split, parity in (("dev", 1), ("held-out", 0)):
             ids = [pid for pid, lab in labels.items() if points[pid]["task_id"] % 2 == parity and member(points[pid])
                    and (points[pid]["provenance"] == "seeded" or lab == "ok" if seeded else True)]
-            wrong = sum(labels[i] == "wrong" for i in ids)
-            print(f"  {split}: {wrong} wrong, {len(ids) - wrong} ok")
+            n_wrong = sum(map(wrong, ids))
+            print(f"  {split}: {n_wrong} wrong, {len(ids) - n_wrong} ok"
+                  + ("" if n_wrong >= MIN_WRONG and n_wrong < len(ids) else "  (too few to report)"))
+            if n_wrong < MIN_WRONG or n_wrong == len(ids):
+                continue
             for key in sorted(scores, key=str):
-                rows = [(points[i]["task_id"], scores[key][i], labels[i] == "wrong") for i in ids if i in scores[key]]
-                if not rows or not any(w for *_, w in rows) or all(w for *_, w in rows):
+                rows = [(points[i]["task_id"], scores[key][i], wrong(i)) for i in ids if i in scores[key]]
+                if sum(w for *_, w in rows) < MIN_WRONG or all(w for *_, w in rows):
                     continue
                 value, (lo, hi) = auc_ci(rows)
                 report[f"{group}|{split}|{key[0]}|{key[1]}"] = {"auc": value, "ci": [lo, hi], "n": len(rows)}
                 ci = f"[{lo:.2f}, {hi:.2f}]" if lo is not None else "[n/a]"
-                print(f"    {key[0]:34s} {key[1]:11s} AUC {value:.3f} {ci}  n={len(rows)}")
-    # shared misses on held-out natural wrong steps, each checker's 'any' at its dev false-alarm threshold
-    checkers = sorted({c for c, q in scores if q == "any"})
-    missed = {}
-    for c in checkers:
-        dev_ok = sorted(s for pid, s in scores[(c, "any")].items()
-                        if labels[pid] == "ok" and points[pid]["task_id"] % 2 == 1)
-        if not dev_ok:
-            continue
-        threshold = dev_ok[min(len(dev_ok) - 1, int((1 - FALSE_ALARM) * len(dev_ok)))]
-        missed[c] = {pid for pid, s in scores[(c, "any")].items() if labels[pid] == "wrong"
-                     and points[pid]["task_id"] % 2 == 0 and s <= threshold}
-        print(f"\n{c}: threshold {threshold:.3f} (flags {FALSE_ALARM:.0%} of correct dev steps); "
-              f"held-out wrong steps missed: {len(missed[c])}")
-    for i, x in enumerate(checkers):
-        for y in checkers[i + 1:]:
-            if x in missed and y in missed:
-                pool = {pid for pid in scores[(x, "any")] if pid in scores[(y, "any")] and labels[pid] == "wrong"
-                        and points[pid]["task_id"] % 2 == 0}
-                if pool:
-                    both = len(missed[x] & missed[y] & pool)
-                    expected = len(missed[x] & pool) * len(missed[y] & pool) / len(pool)
-                    print(f"  missed by both {x} and {y}: {both} (independent: {expected:.1f}) of {len(pool)}")
+                spread = ""
+                if len(runs) > 1 and key[1] != "rule":
+                    each = [auc([r[key][i] for i in ids if i in r.get(key, {}) and wrong(i)],
+                                [r[key][i] for i in ids if i in r.get(key, {}) and not wrong(i)]) for r in runs]
+                    each = [v for v in each if v is not None]
+                    spread = f"  runs {min(each):.2f}-{max(each):.2f}" if each else ""
+                print(f"    {key[0]:34s} {key[1]:11s} AUC {value:.3f} {ci}  n={len(rows)}{spread}")
+
+    # Thresholds: each checker's score for calls and for answers is the question, mean or max with the best dev AUC,
+    # and flags at most FALSE_ALARM of correct dev steps. Everything after is held-out.
+    print(f"\n== Held-out catches at thresholds set on dev (each flags at most {FALSE_ALARM:.0%} of correct dev steps)")
+    kinds = {"calls": lambda p: p["tool"] != "finish", "answers": lambda p: p["tool"] == "finish"}
+    pools = {"natural, give-ups excluded": lambda p: natural(p) and not given_up(p),
+             "natural give-ups": lambda p: natural(p) and given_up(p),
+             "seeded": lambda p: not natural(p)}
+    caught = defaultdict(dict)      # checker -> point_id -> flagged, for held-out wrong steps
+    for c in sorted({k[0] for k in scores}):
+        for kind, member in kinds.items():
+            dev_ids = [i for i in labels if dev(i) and member(points[i])]
+            keys = sorted(k for k in scores if k[0] == c and any(i in scores[k] for i in dev_ids))
+            dev_auc = {k: auc([scores[k][i] for i in dev_ids if i in scores[k] and wrong(i)],
+                              [scores[k][i] for i in dev_ids if i in scores[k] and not wrong(i)]) for k in keys}
+            dev_auc = {k: v for k, v in dev_auc.items() if v is not None}
+            if not dev_auc:
+                continue
+            key = max(dev_auc, key=dev_auc.get)
+            t, fpr = threshold(scores[key], [i for i in dev_ids if not wrong(i)])
+            held = [i for i in labels if not dev(i) and member(points[i]) and i in scores[key]]
+            held_ok = [i for i in held if not wrong(i)]
+            for i in held:
+                if wrong(i):
+                    caught[c][i] = scores[key][i] >= t
+            counts = []
+            for pool, in_pool in pools.items():
+                ws = [i for i in held if wrong(i) and in_pool(points[i])]
+                if ws:
+                    counts.append(f"{pool} {sum(caught[c][i] for i in ws)}/{len(ws)}")
+            held_fpr = sum(scores[key][i] >= t for i in held_ok) / len(held_ok) if held_ok else float("nan")
+            print(f"  {c:34s} {kind:7s} {key[1]:11s} threshold {t:.3f} (dev false alarms {fpr:.0%}, held-out "
+                  f"{held_fpr:.0%}); caught " + ", ".join(counts))
+
+    print("\n== Held-out wrong steps both checkers miss (pairs of model checkers)")
+    models = sorted(c for c in caught if not c.startswith("rule:"))
+    for pool, in_pool in pools.items():
+        for i, x in enumerate(models):
+            for y in models[i + 1:]:
+                ids = [p for p in caught[x] if p in caught[y] and in_pool(points[p])]
+                if not ids:
+                    continue
+                mx, my = {p for p in ids if not caught[x][p]}, {p for p in ids if not caught[y][p]}
+                note = "" if len(ids) >= 10 else "  (under 10 wrong steps: not interpreted)"
+                print(f"  {pool}: {x} misses {len(mx)}, {y} misses {len(my)}, both {len(mx & my)} "
+                      f"(independent: {len(mx) * len(my) / len(ids):.1f}) of {len(ids)}{note}")
     (run / "report.json").write_text(json.dumps(report, indent=1) + "\n")
 
 
@@ -249,6 +343,7 @@ def main() -> None:
                    help="decision: a /v1/systemone model (Jev by default); openai: an OpenAI model through the "
                         "Responses API (Luna); reviewer: a local chat model scored by token log-probabilities")
     k.add_argument("--model", required=True)
+    k.add_argument("--effort", help="openai only: the reasoning effort to pin, such as medium")
     k.add_argument("--url", help="defaults to Jev's or OpenAI's URL from config.py")
     k.add_argument("--timeout", type=float, default=300)
     k.add_argument("--limit", type=int)
@@ -257,6 +352,8 @@ def main() -> None:
     k.add_argument("--dry-run", action="store_true")
     r = sub.add_parser("report")
     r.add_argument("--run-dir", required=True)
+    r.add_argument("--verdicts", nargs="+", help="verdict files of repeated runs on the same points; each step's "
+                                                  "score is averaged across them (default: the run dir's own)")
     a = p.parse_args()
     {"build": cmd_build, "tokens": cmd_tokens, "ask": cmd_ask, "report": cmd_report}[a.cmd](a)
 

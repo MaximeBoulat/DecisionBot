@@ -117,12 +117,13 @@ class ReviewerChecker:
 class OpenAIReviewerChecker:
     """An OpenAI model through the Responses API, such as the agent's own generator. Reasoning models do not
     return token log-probabilities, so each step is one request whose strict JSON schema asks for a stated
-    probability for every option of every question. Stated probabilities are coarser than token ones."""
+    probability for every option of every question. Stated probabilities are coarser than token ones.
+    A pinned reasoning effort is part of the checker's name, so answers at different efforts never mix."""
 
-    def __init__(self, model: str, url: str, api_key: str, timeout: float = 300) -> None:
-        self.model, self.url, self.timeout = model, url, timeout
+    def __init__(self, model: str, url: str, api_key: str, timeout: float = 300, effort: str | None = None) -> None:
+        self.model, self.url, self.timeout, self.effort = model, url, timeout, effort
         self.headers = {"content-type": "application/json", "authorization": f"Bearer {api_key}"}
-        self.name = f"openai:{model}"
+        self.name = f"openai:{model}" + (f"@{effort}" if effort else "")
 
     def _ask(self, state_text: str, questions: dict) -> dict[str, dict[str, float]]:
         options = {name: list(q["criteria"]) if q["type"] == "choice" else ["yes", "no"] for name, q in questions.items()}
@@ -135,6 +136,7 @@ class OpenAIReviewerChecker:
                    "properties": {opt: {"type": "number"} for opt in opts}} for name, opts in options.items()}}
         body = post_json(self.url, {
             "model": self.model,
+            **({"reasoning": {"effort": self.effort}} if self.effort else {}),
             "input": [{"role": "system", "content": REVIEWER_SYSTEM},
                       {"role": "user", "content": f"{state_text}\n\nQUESTIONS:\n{listing}\n\nFor each question, give "
                                                   "your probability for each option. Each question's probabilities sum to 1."}],
@@ -150,6 +152,7 @@ class OpenAIReviewerChecker:
                 raise ValueError(f"no probability given for {name}")
             out[name] = {opt: v / total for opt, v in values.items()}
         self.last_tokens = (body.get("usage") or {}).get("input_tokens")
+        self.last_effort = (body.get("reasoning") or {}).get("effort")
         return out
 
     def canary(self) -> str:
@@ -157,7 +160,9 @@ class OpenAIReviewerChecker:
                       "instructions": "Which team should handle `message`?"}})["department"]
         if p["billing"] < 0.9:
             raise RuntimeError(f"canary failed: billing = {p['billing']:.3f}")
-        return f"billing = {p['billing']:.3f}"
+        if self.effort and self.last_effort and self.last_effort != self.effort:
+            raise RuntimeError(f"asked for reasoning effort {self.effort}, the response reports {self.last_effort}")
+        return f"billing = {p['billing']:.3f}, reasoning effort {self.last_effort or 'not reported'}"
 
     def ask(self, state: dict, questions: dict) -> tuple[dict, int | None]:
         wired = wire(questions)
