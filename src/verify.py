@@ -290,7 +290,7 @@ def cmd_report(a) -> None:
     for c in sorted({k[0] for k in scores}):
         for kind, member in kinds.items():
             dev_ids = [i for i in labels if dev(i) and member(points[i])]
-            keys = [k for k in scores if k[0] == c and any(i in scores[k] for i in dev_ids)]
+            keys = sorted(k for k in scores if k[0] == c and any(i in scores[k] for i in dev_ids))
             dev_auc = {k: auc([scores[k][i] for i in dev_ids if i in scores[k] and wrong(i)],
                               [scores[k][i] for i in dev_ids if i in scores[k] and not wrong(i)]) for k in keys}
             dev_auc = {k: v for k, v in dev_auc.items() if v is not None}
