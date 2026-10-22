@@ -40,6 +40,8 @@ The last six steps show their results, each cut to about 1,500 characters (head 
 
 Questions with a missing-evidence case have a "not applicable" or "not observable" option, so the checker is not forced into a yes or no.
 
+SQL steps (`query_data`) also get one question per computation rule in the documentation, and answers get `cost_direction`; see "Rule questions" at the end.
+
 **Labels (which steps are wrong).** Labels are made separately and never shown to a checker:
 - **Final answers** are graded by the Scorer against the answer key.
 - **`compute_fees` calls** on the 13 fee question templates are checked against the arguments the question implies: merchant, period, filters and any hypothetical change.
@@ -192,3 +194,113 @@ Every checker run starts with a canary request with a known answer and stops if 
   - **`rule:scope`.** A no-model baseline that compares the merchant, month, day, fee ID, rate and MCC named in the question with the call's arguments. It scores 1.00 on every seeded call fault, so those seeds measure whether a question is sensitive, not whether a checker adds to code.
   - **Repeated runs.** Luna's AUCs moved by a median of 0.04 between two identical runs (Jev's by 0.004), which the task-resampled intervals do not show. `report` now averages several verdict files and prints the single-run range. Luna's reasoning effort is pinned with `--effort` and is part of the checker name.
 - October 22, 2026: **seeded faults removed.** `build` no longer copies correct steps with a planted fault, and `report` scores only steps the agent took (in an older run directory, seeded points are skipped). The seeds measured whether a question reacts to an obvious fault, and `rule:scope` showed code catches all of them, so they could not show a checker adding judgment, and their lines in the report drew attention from the agent's own errors. What the verifier is for is whether checkers miss the same errors agents make, and that needs the agent's own errors: the October 20 and 21 runs on the dabstep-blindspots tasks have them, several identical to leaderboard agents' wrong answers. The registered plan above still describes seeds; this entry supersedes those parts.
+
+---
+
+# Rule questions (registered October 22, 2026)
+
+Written before any checker was asked a rule question. A first draft was revised after an adversarial review by a second model (Codex), still before any run. Changes made after a run are listed at the end with their dates.
+
+## Why
+
+On the October 22 run on the dabstep-blindspots tasks (`shadow-20261022T032141947388Z`), 13 steps are labeled decisive errors (step labels by Claude, reviewed by Codex). Nine are `query_data` SQL steps, and most break a rule the documentation states: fraud counted by transactions instead of volume, fee rules with a null field dropped, fee rules with an empty list dropped. Jev and Luna scored those steps as fine. Their AUCs for errors that matter were 0.42 and 0.54, against 0.70 for a rule that knows only a step's position in the run. The call questions ask about period, merchant, filter and hypothetical change; none asks whether a query follows a documented rule. This test asks whether the checkers catch these errors when a question points at the rule.
+
+## Questions
+
+One question for each rule in the documentation the agent saw on how fee rules are matched, fees computed, fraud measured, months bounded and domestic payments defined:
+
+| Question | Rule | Source |
+|---|---|---|
+| `fee_formula` | fee = fixed_amount + rate × transaction value / 10000 | `manual.md` line 92 |
+| `natural_months` | monthly volume and fraud level use calendar months | line 93 |
+| `full_month_bands` | monthly bands use each full merchant month | `compute_fees` description |
+| `null_matches_all` | a null field applies to every value | line 95 |
+| `empty_matches_all` | an empty rule field matches every value | `compute_fees` description |
+| `sum_matching_rules` | the fees of every matching rule are summed | `compute_fees` description |
+| `fraud_by_volume` | fraud is fraudulent volume over total volume | line 225 |
+| `intracountry` | a payment is domestic when the issuing and acquiring countries are the same | line 89 |
+| `cost_direction` (answers) | fees are typically higher with faster capture, a higher fraud level, credit cards and international payments, and lower with a higher monthly volume | lines 81 to 89 |
+
+Left out, with the reason:
+- payments no rule matches cost zero (`compute_fees`): leaving them out of a sum gives the same total;
+- a scenario returns the new-minus-old delta (`compute_fees`): the `quantity` answer question already asks for a change, not a total;
+- fixed amounts and values share a currency (line 94): every amount in the data is in euros;
+- scenarios do not predict altered fraud incidence (`compute_fees`): a caveat on interpreting results, not a computation;
+- field definitions and SQL syntax notes.
+
+Each rule question has a `not_applicable` option for steps that compute nothing of the kind, and flags the step when the answer is that the rule is broken. The null and empty-list questions apply only when a step builds the set of rules that apply to a payment, so schema lookups, samples and looks at rules with explicit values are not applicable. `fraud_by_volume` judges the statistic used to answer a fraud question, not side counts beside it. `cost_direction` reads the answer together with the question, so "intracountry" in answer to "which factor makes fees cheaper when set to False" asserts a direction. The wording is in `Verifier/questions.py`. Question sets: `2f7a3f495074` (`query_data`, 13 questions), `9cdbbbc3572d` (answers, 6); `compute_fees` keeps `09fddf2da9a0` (5).
+
+The rule questions are asked only on `query_data` steps, where the agent writes the computation itself; `compute_fees` applies these rules on its own.
+
+**Disclosure.** These questions were written after reading the labeled errors, on the same tasks they will be scored on. To limit fitting them to those errors, there is one question per rule in the scope above, including five that no decisive error breaks (fee formula, calendar months, full-month bands, summed rules, intracountry). Those five should rarely flag, and their false alarms count against the checkers. A clean claim that the questions generalize needs tasks no one has inspected.
+
+## State
+
+Every state now holds every tool's description (`tools`), as the agent had them in every request; before, a state held only the proposed tool's. The empty-list, summation and full-month rules are stated only in the `compute_fees` description, so without this a checker could not see them on a `query_data` step. State version 2. Apart from `tools`, the states are identical to the natural points in `out/verify/blind50-jev` (checked on all 220).
+
+The state and the questions change together, so the run cannot separate them for every error. For errors under a rule the checkers could already read in `documentation` (fraud by volume, null fields, cost direction), only the questions changed. For empty lists, the rule itself is new to the state, so those errors test the documentation and the question together.
+
+## Predictions
+
+The decisive errors split by whether a rule question covers them:
+
+| | Development (odd ids) | Held out (even ids) |
+|---|---|---|
+| Covered, rule already visible | 49 (fraud by volume) | 18 (fraud by volume), 66 (cost direction), 1296 (null field) |
+| Covered, rule newly visible | 1305, 1347, 1417, 1641 (empty lists) | |
+| Not covered | 67 (field names), 71 (a fine threshold the manual never states) | 68 (field names), 70 (unstated threshold), 1458 (a card scheme taken for a merchant) |
+
+If the checkers missed these errors because nothing asked, the rule questions should flag covered errors and leave uncovered errors where they were. If scores rise on both, the new questions flag more of everything rather than reading rules. 49's error rests on the fraud-by-volume reading adopted from official scores.
+
+## Runs
+
+From this branch, with the states in `out/verify/blind50-rules` and `--all` (without it, `ask` skips every SQL step):
+
+```sh
+R=out/verify/blind50-rules
+uv run src/verify.py ask --run-dir $R --checker decision --model jev-latest --all --split dev
+uv run src/verify.py ask --run-dir $R --checker openai --model gpt-6-luna --effort medium --all --split dev
+# after the development results are read:
+uv run src/verify.py ask --run-dir $R --checker decision --model jev-latest --all --split held-out
+uv run src/verify.py ask --run-dir $R --checker openai --model gpt-6-luna --effort medium --all --split held-out
+```
+
+- One run per checker, matching the runs with the old questions. Luna's AUCs moved by a median of 0.04 between identical runs; that is a reference for reading Luna's differences, not a bound that makes larger ones real.
+- The wording is frozen for both splits. If it changes after the development results are read, the development run is repeated with the new wording before any score or threshold is chosen, and the change is dated below.
+- A step whose answer failed is retried by rerunning the same command; the report lists any that still have no answer.
+
+## Measures
+
+`out/labels/score_rules.py`, run against `out/labels/step_labels.jsonl`. Errors that matter are steps labeled decisive or follow-on; correct steps are those labeled ok; other steps are left out. Every verdict row must carry the registered question-set hash and the hash of its point's state, or it is skipped and counted. Thresholds are chosen from development scores alone.
+
+Scores per step: each question's flag probability; `mean` over the questions asked on the step, with a `not_applicable` answer counting as 0; `max` over them; and, on `query_data` steps only, `rules`, the max over the rule questions. Steps are pooled by kind: `query_data` steps and answers, separately.
+
+1. **Each rule question (primary):** AUC for errors that matter against correct steps, on `query_data` steps of all tasks, with the interval from resampling tasks; `cost_direction` the same on answers. Nothing is tuned on these, so they use every task.
+2. **Each checker overall:** in each pool, the question, `mean`, `max` or `rules` with the best development AUC (ties to the first listed), and its held-out AUC, beside the same choice made on the old run and the no-model rules. The held-out `query_data` pool has 4 errors that matter, under the 5 needed to report an AUC, so this measure is expected to report answers only.
+3. **Held-out catches:** at the lowest score that flags at most 10% of correct development steps, which held-out decisive errors each checker flags, covered and not covered separately, and its false-alarm rate on held-out correct steps; old run beside new.
+4. **Shared misses:** held-out decisive errors Jev and Luna both miss, against the count expected if independent; old run beside new. Six errors is under the plan's minimum of ten, so this is reported, not interpreted.
+5. **Old questions in the new runs:** the mean change in each old question's score from the old run, since asking more questions in one request can shift the old answers.
+
+## What counts
+
+- A rule question has a signal if the lower bound of its AUC is above 0.5. It is useful if it also flags covered decisive errors at a development threshold while staying at or under 10% false alarms.
+- The explanation above is supported if the rule questions flag covered errors the old questions missed, especially those under rules already visible (18, 49, 66, 1296), and do not flag uncovered ones. With 3 to 4 errors per group, this is a description, not a test.
+- The criteria of the registered plan above still apply to held-out claims: a lower bound above 0.5, and above the best no-model baseline, before a checker is said to add to code.
+
+## Changes after the first rule-question run
+
+- October 22, 2026, after the development runs: `score_rules.py` crashed on measure 4 when no held-out errors had been scored yet; it now says so and moves on. No measure, question or threshold changed. The question wording is unchanged for the held-out runs.
+
+## Results of the first rule-question run (October 22, 2026)
+
+Jev and Luna (medium) answered all 220 steps, development and held-out, with no failed requests and every canary passing. The full output of `score_rules.py` is `out/verify/blind50-rules/score_rules.txt`, which is not in the repo.
+
+- **Covered errors.** On its covering question, each covered decisive error scored 0.5 or above for at least one checker: 18 and 49 (fraud by volume) 1.00 for both; 1305, 1347, 1417 and 1641 (empty lists) 0.89 to 0.98 for Jev and 0.99 to 1.00 for Luna; 1296 (null field) 0.81 for Jev, 0.00 for Luna, which judged the question not applicable; 66 (cost direction) 0.39 for Jev, 0.99 for Luna. On the mean of the old questions, these scored 0.01 to 0.24, except 66 for Jev (0.56) and 1296 for Luna (0.40); only those two were flagged at the development threshold.
+- **Uncovered errors.** 67, 68, 70, 71 and 1458 scored at most 0.07 on every rule question, except Jev's 0.46 on 67.
+- **Measure 1.** On SQL steps, Jev's null-field question (AUC 0.82 [0.66, 0.96]) and intracountry question (0.77 [0.59, 0.93]) have lower bounds above 0.5. No decisive error breaks the intracountry rule, so only the null-field question clears 0.5 for the reason intended. Luna's best are empty lists (0.72 [0.48, 0.91]) and null fields (0.68 [0.48, 0.86]). The position rule reaches 0.72 on the same steps. `cost_direction` on answers: Jev 0.63 [0.47, 0.79], Luna 0.56 [0.47, 0.68].
+- **Measure 2.** The held-out SQL pool has 4 errors that matter, too few to report, as expected. On answers both checkers chose `quantity`; held-out AUCs 0.53 (Jev) and 0.61 (Luna), against 0.83 for the no-model `unsourced` rule.
+- **Measure 3.** On SQL steps, Jev's `mean` flagged 1296 and missed 18; Luna's `rules` flagged 18 and missed 1296; both missed 1458. Their held-out false-alarm rates were 18% and 15%, over the 10% limit. With the old questions, neither flagged 18 or 1296. On answers, Jev missed 66, 68 and 70 (17% false alarms); Luna flagged 66 and 70 and missed 68 (0%).
+- **Measure 4.** Both checkers missed 2 of 6 held-out decisive errors (68, 1458) against 2.5 expected if independent; with the old questions, 4 against 4.2. Reported, not interpreted.
+- **Measure 5.** Jev's old questions moved little (mean change at most 0.13). Luna's moved more: `filter` by 0.47 on fee calls and 0.21 on SQL steps, `action` by 0.28 on SQL steps.
+
+By the criteria above, the explanation is supported as a description: covered errors were flagged on their questions and uncovered ones were not. No rule question is useful by the registered definition, since the development thresholds flagged 15 to 18% of correct held-out SQL steps, and no checker is shown to add to code. Most misses and false alarms came from the checker deciding whether a question applies. The questions were written after seeing these errors, so a claim needs tasks no one has inspected.
