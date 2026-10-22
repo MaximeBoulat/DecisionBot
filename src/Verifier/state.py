@@ -11,7 +11,7 @@ from Agent.tool_schemas import TOOLS_SCHEMA
 from models import AgentStep, Task
 from Scorer.scorer import same_answer
 
-STATE_VERSION = 1
+STATE_VERSION = 2       # 2: every tool's description is in the state, as the agent had them
 HISTORY_STEPS = 6       # most recent steps shown in full; earlier ones as one line each
 RESULT_CHARS = 1500     # per tool result, head and tail kept, for every state alike
 DESCRIPTIONS = {tool["name"]: tool["description"] for tool in TOOLS_SCHEMA}
@@ -106,6 +106,7 @@ def build_state(point: Point, documentation: dict[str, str]) -> tuple[dict, dict
         facts = call_facts(point.tool_args)
     state = {
         "documentation": documentation,
+        "tools": DESCRIPTIONS,
         "question": point.task.question,
         "answer_format": point.task.answer_format,
         "history": history,
