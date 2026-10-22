@@ -124,9 +124,9 @@ def flag_score(question: dict, answer: dict, final_answer: str | None) -> float 
         p = answer.get("noul")
         if p is None:
             return None
-        if flag == "answerable_but_not_applicable":
+        if flag == "answerable_but_not_applicable":     # only a give-up can be wrongly given up
             given_up = (final_answer or "").strip().lower() in ("", "not applicable")
-            return p if given_up else 0.0
+            return p if given_up else None
         return 1 - p
     probabilities = answer.get("probabilities") or {}
     if flag == "not_proceed":

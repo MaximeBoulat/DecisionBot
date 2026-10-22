@@ -52,7 +52,7 @@ SQL queries (`query_data`) have no exact label and are skipped by default. That 
 - **Luna** gets one request per step through OpenAI's Responses API. A strict JSON schema asks it to *state* a probability for every option of every question. Those are stated probabilities, not probabilities read from the model's tokens. Luna returns reasoning, and OpenAI's reasoning models have not exposed token log-probabilities; this was not tested for Luna itself. Stated probabilities are coarser (many round numbers and ties) and less well calibrated, so a Jev-versus-Luna gap mixes the model with how its confidence is measured.
 
   *Option: token log-probabilities.* If the Responses API returns log-probabilities for Luna (request `"include": ["message.output_text.logprobs"]` with `"top_logprobs": 20`), Luna could be scored the way the local reviewer is: one single-letter reply per question, with option probabilities read from the first token's log-probabilities. That would put Jev and Luna on the same footing. It is not implemented. Try one request first, because a reasoning model may refuse the parameter or spend its first tokens on reasoning, and a reply per question costs about five times as many requests. If it is added, record which method produced each answer, so the two kinds of probability are never pooled.
-- **No-model baselines** set the bar a checker must clear. `rule:exclusion` flags any call that excludes records, `rule:not_applicable` flags an answer of "Not Applicable", and `rule:unsourced` flags an answer whose number appears in no tool result.
+- **No-model baselines** set the bar a checker must clear. `rule:exclusion` flags any call that excludes records, `rule:scope` flags a fee call whose merchant, month, day, fee ID, rate or MCC differs from the one the question names (read from words in the question, not its template) or that excludes records, `rule:not_applicable` flags an answer of "Not Applicable", and `rule:unsourced` flags an answer whose number appears in no tool result.
 
 **Split.** Odd task ids are for development and even task ids are held out. Anything tuned, such as a question's wording or a threshold, is decided on development tasks, and claims come from held-out tasks.
 
@@ -76,7 +76,7 @@ uv run src/verify.py build --episodes results/episodes.jsonl --run-dir $R
 
 # 2. Ask each checker about the 233 labeled steps.
 uv run src/verify.py ask --run-dir $R --checker decision --model jev-latest     # Jev, JEV_URL in config.py
-uv run src/verify.py ask --run-dir $R --checker openai --model gpt-6-luna      # Luna, OPENAI_URL in config.py
+uv run src/verify.py ask --run-dir $R --checker openai --model gpt-6-luna --effort medium   # Luna, OPENAI_URL in config.py
 
 # 3. Score the checkers against the labels. No model calls.
 uv run src/verify.py report --run-dir $R
@@ -88,6 +88,8 @@ What to expect:
 - **Progress** prints every 10 steps.
 - **Every answer is appended to `$R/verdicts.jsonl` as it arrives.** Rerunning the same command resumes where it stopped, and a finished run makes no new requests. The cache is keyed by the exact state and question set, so changing either one asks again rather than reusing stale answers.
 - **`--split dev`, `--split held-out` and `--limit N`** run part of the set, for a quick first look. The full report needs both splits.
+- **Pin Luna's reasoning effort** with `--effort`. The effort becomes part of the checker's name (`openai:gpt-6-luna@medium`), so answers at different efforts are never mixed, and the canary stops the run if the response reports a different effort.
+- **Repeat a run in a new directory.** A rerun in the same directory replays the cache. Copy `points.jsonl` and `labels.jsonl` into a new directory, run `ask` there, and pass every run's file to the report: `report --run-dir $R --verdicts $R/verdicts.jsonl $R2/verdicts.jsonl`. Each step's score is averaged across runs, and each line also shows the lowest and highest single-run AUC. Luna's answers changed noticeably between two identical runs, so plan on three Luna runs.
 - **Requests are sequential.** Plan on tens of minutes per checker.
 - **Cost.** At the prices in `config.py` ($0.10 per million input tokens and $0.50 per million output tokens), Luna's 233 steps are about 1.9 million input tokens, around $0.20 plus output and reasoning tokens. Jev's price is not recorded here.
 - **On macOS, keep the machine awake** for the length of a run: `caffeinate -i -s -w <pid of the ask process>`.
@@ -105,20 +107,24 @@ Every state is under 11.1k tokens (d3 tokenizer), which fits Jev's 32k state lim
 
 `report` prints one block per group of steps, for development and held-out tasks separately:
 
-- **natural calls** and **natural answers**: the agent's own steps, wrong or correct as recorded.
+- **natural calls**: the agent's own tool calls, wrong or correct as recorded.
+- **natural answers, give-ups excluded**: the agent's own final answers other than "Not Applicable". This is where a checker has to judge an answer; give-ups are caught by `rule:not_applicable`.
+- **natural give-ups**: final answers of "Not Applicable". In Max's run all of them are wrong, so the group has no correct steps and no AUC.
 - **seeded calls** and **seeded answers**: the seeded faults against the correct steps they were copied from, overall and then for each fault type (`period`, `merchant`, `filter`, `change`, `give_up`, `quantity`).
 
-Each line is one checker and question (or `any`, the highest flag across a checker's questions), followed by:
+Each line is one checker and question, or a checker's `mean` or `max` across its questions, followed by:
 - **AUC:** the chance that a randomly chosen wrong step gets a higher flag than a randomly chosen correct one. 0.5 is chance, and 1.0 is perfect separation.
 - **A 95% interval**, from resampling whole tasks.
 - **n:** the number of steps behind it.
+- **runs** (with several verdict files): the lowest and highest single-run AUC.
+
+A split with fewer than 5 wrong steps is marked "too few to report" and has no lines. `quantity` is scored only on answers that are not "Not Applicable" (choosing `not_observable` for a give-up is correct), and `answerable` only on answers that are.
 
 The `rule:` lines are the no-model baselines on the same steps. For a checker to be useful it must beat them, not just beat 0.5.
 
-The last lines are about **shared misses**:
-- Each checker gets a threshold that flags 10% of correct development steps.
-- On held-out wrong steps, the report counts how many each checker misses, and how many two checkers both miss, against the number expected if their misses were independent.
-- Both missing far more often than expected is a shared blind spot.
+The next block gives **held-out catches**. For calls and for answers separately, each checker's score is the question, `mean` or `max` with the best development AUC. Its threshold is the lowest score that flags at most 10% of correct development steps; a step is flagged at or above it. The line shows the false-alarm rate the threshold reaches on development and held-out steps, and how many held-out wrong steps it catches: natural steps other than give-ups, natural give-ups, and seeded faults. A threshold of `inf` means ties at the top made 10% unreachable, so nothing is flagged.
+
+The last lines are about **shared misses**, for each pair of model checkers and each of those three pools: how many held-out wrong steps each misses, how many both miss, and the number expected if their misses were independent. Both missing far more often than expected is a shared blind spot. Pools under 10 wrong steps are marked and not interpreted.
 
 ## Limits of this run
 
@@ -180,3 +186,11 @@ Every checker run starts with a canary request with a known answer and stops if 
 ## Changes after the first model run
 
 - October 19, 2026, while the first local run (d3, 60 development steps) was in progress and before any result was read: added the `openai` checker so the panel can be Jev and Luna, the models DecisionBot runs on. Luna's scores are stated probabilities, not token probabilities (see Method).
+- October 21, 2026, after reading two full Jev and Luna runs. These change the report, not the questions or states, so the cached answers stay valid:
+  - **Shared misses.** A step whose score tied the threshold counted as missed, so Luna, whose stated probabilities reach 1.0 on most correct steps, got a threshold of 1.000 and "missed" every wrong step. Steps are now flagged at or above the threshold, and the report prints the false-alarm rate the threshold reaches. The pool also included seeded steps, though the plan names natural ones; natural steps, natural give-ups and seeded steps are now separate pools.
+  - **Overall score.** The maximum over stated probabilities saturates, which made `any` Luna's weakest score. Each checker's overall score is now chosen on development steps from its questions, their mean and their maximum (`max` replaces `any`), separately for calls and answers.
+  - **`quantity` and `answerable`.** `quantity` offered `not_observable` for give-ups, which is the right reply, but it was scored as not flagging them; it is now scored only on answers other than "Not Applicable". `answerable` was scored 0 on every other answer, which made it a copy of `rule:not_applicable`; it is now scored only on give-ups.
+  - **Give-ups.** Every give-up in Max's run is wrong, so `rule:not_applicable` separates them perfectly and they inflated every answer-level line. Natural answers are now reported with give-ups excluded, and give-ups on their own.
+  - **Small groups.** Lines with fewer than 5 wrong steps are no longer printed.
+  - **`rule:scope`.** A no-model baseline that compares the merchant, month, day, fee ID, rate and MCC named in the question with the call's arguments. It scores 1.00 on every seeded call fault, so those seeds measure whether a question is sensitive, not whether a checker adds to code.
+  - **Repeated runs.** Luna's AUCs moved by a median of 0.04 between two identical runs (Jev's by 0.004), which the task-resampled intervals do not show. `report` now averages several verdict files and prints the single-run range. Luna's reasoning effort is pinned with `--effort` and is part of the checker name.
