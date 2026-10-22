@@ -62,6 +62,7 @@ def manual_reading(answer: dict[str, str]) -> str | None:
 class AnswerKeyEntry:
     answer: str | dict[str, str]
     ambiguous: bool
+    template: str | None = None
 
 
 class Scorer:
@@ -83,6 +84,7 @@ class Scorer:
                     raise ValueError(f"Duplicate answer-key task {task_id}")
                 key[task_id] = AnswerKeyEntry(
                     answer, bool(row.get("ambiguous", False)) or isinstance(answer, dict),
+                    row.get("template"),
                 )
         return key
 
@@ -93,6 +95,20 @@ class Scorer:
             detail = {"task_id": result.task_id, "submitted_answer": result.final_answer}
             answered = result.finished and result.error is None and result.final_answer is not None
             reading = manual_reading(entry.answer) if entry is not None and isinstance(entry.answer, dict) else None
+            scoring_basis = "manual_reading" if reading else None
+            if entry is not None and isinstance(entry.answer, dict) and entry.answer:
+                normalized = {
+                    tuple((label, value) for label, value, _ in _parts(answer))
+                    for answer in entry.answer.values()
+                }
+                if len(normalized) == 1:
+                    reading = next(iter(entry.answer))
+                    scoring_basis = "all_readings_agree"
+                elif entry.template in {"mcc_fee_extreme", "aci_fee_extreme"}:
+                    preferred = "empty_lists_wildcard__highest_single"
+                    if preferred in entry.answer:
+                        reading = preferred
+                        scoring_basis = "benchmark_derived_highest_single_fee"
             if entry is None:
                 detail["status"] = "missing_key"
             elif entry.ambiguous and reading is None:
@@ -109,6 +125,7 @@ class Scorer:
                 detail["expected_answer"] = expected
                 if reading:
                     detail["interpretation"] = reading
+                    detail["scoring_basis"] = scoring_basis
             details.append(detail)
         correct = sum(d["status"] == "correct" for d in details)
         graded = sum(d["status"] in ("correct", "incorrect") for d in details)
@@ -119,6 +136,6 @@ class Scorer:
             "missing_key": sum(d["status"] == "missing_key" for d in details),
             "correct": correct,
             "accuracy": correct / graded if graded else None,
-            "comparison": "normalized, numbers to submitted precision or 0.01%; fee interpretations by the manual's reading",
+            "comparison": "normalized, numbers to submitted precision or 0.01%; identical readings are gradeable; fee-extreme templates use benchmark-derived highest single fee; other fee interpretations use the manual's reading",
             "tasks": details,
         }
