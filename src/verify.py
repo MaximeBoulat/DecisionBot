@@ -24,7 +24,7 @@ from pathlib import Path
 
 from config import ANSWER_KEY_PATH, JEV_URL, OPENAI_API_KEY, OPENAI_URL, TYPESAFE_API_KEY
 from Scorer.scorer import Scorer
-from Scorer.step_labels import MERCHANTS, MONTHS, episode_points, label, seeds
+from Scorer.step_labels import MERCHANTS, MONTHS, episode_points, label
 from Verifier.checkers import DecisionModelChecker, OpenAIReviewerChecker, ReviewerChecker, VerdictCache
 from Verifier.questions import flag_score, questions_for
 from Verifier.state import STATE_VERSION, build_state
@@ -46,26 +46,17 @@ def cmd_build(a) -> None:
     for episode in read_jsonl(Path(a.episodes)):
         for point in episode_points(episode):
             verdict, reasons = label(point, scorer)
-            items = [(point, "natural", None, verdict, reasons)]
-            if verdict == "ok":
-                for seeded, kind in seeds(point):
-                    seeded_verdict, seeded_reasons = label(seeded, scorer)
-                    if seeded_verdict != "wrong":
-                        sys.exit(f"seed {seeded.point_id} is not labeled wrong ({seeded_verdict}); fix the seeding")
-                    items.append((seeded, "seeded", kind, seeded_verdict, seeded_reasons))
-            for p, provenance, kind, verdict_, reasons_ in items:
-                state, meta = build_state(p, episode["documentation"])
-                points.append({"point_id": p.point_id, "task_id": p.task.task_id, "tool": p.tool_name,
-                               "provenance": provenance, "seed": kind, "state_version": STATE_VERSION,
-                               "state": state, **meta})
-                labels.append({"point_id": p.point_id, "label": verdict_, "reasons": reasons_})
+            state, meta = build_state(point, episode["documentation"])
+            points.append({"point_id": point.point_id, "task_id": point.task.task_id, "tool": point.tool_name,
+                           "state_version": STATE_VERSION, "state": state, **meta})
+            labels.append({"point_id": point.point_id, "label": verdict, "reasons": reasons})
     (run / "points.jsonl").write_text("".join(json.dumps(p) + "\n" for p in points))
     (run / "labels.jsonl").write_text("".join(json.dumps(x) + "\n" for x in labels))
     count = defaultdict(int)
     for p, x in zip(points, labels):
-        count[(p["provenance"], "answer" if p["tool"] == "finish" else p["tool"], x["label"])] += 1
+        count[("answer" if p["tool"] == "finish" else p["tool"], x["label"])] += 1
     for key in sorted(count, key=str):
-        print(f"  {key[0]:8s} {key[1]:18s} {str(key[2]):6s} {count[key]}")
+        print(f"  {key[0]:18s} {str(key[1]):6s} {count[key]}")
     print(f"{len(points)} points written to {run}")
 
 
@@ -228,6 +219,7 @@ def cmd_report(a) -> None:
     run = Path(a.run_dir)
     points = {p["point_id"]: p for p in read_jsonl(run / "points.jsonl")}
     labels = {x["point_id"]: x["label"] for x in read_jsonl(run / "labels.jsonl") if x["label"] is not None}
+    labels = {pid: lab for pid, lab in labels.items() if points[pid].get("provenance", "natural") == "natural"}  # older runs held seeds
     runs = [checker_scores(Path(f), points, labels) for f in (a.verdicts or [run / "verdicts.jsonl"])]
     scores = defaultdict(dict)      # (checker, question) -> point_id -> score, averaged over runs
     for key in {k for r in runs for k in r}:
@@ -238,27 +230,18 @@ def cmd_report(a) -> None:
             scores[(name, "rule")][pid] = s
     wrong = lambda pid: labels[pid] == "wrong"
     dev = lambda pid: points[pid]["task_id"] % 2 == 1
-    natural = lambda p: p["provenance"] == "natural"
     groups = {
-        "natural calls": lambda p: natural(p) and p["tool"] != "finish",
-        "natural answers, give-ups excluded": lambda p: natural(p) and p["tool"] == "finish" and not given_up(p),
-        "natural give-ups (answers that are 'Not Applicable')": lambda p: natural(p) and given_up(p),
-        "seeded calls": lambda p: p["tool"] != "finish",
-        "seeded answers": lambda p: p["tool"] == "finish",
+        "calls": lambda p: p["tool"] != "finish",
+        "answers, give-ups excluded": lambda p: p["tool"] == "finish" and not given_up(p),
+        "give-ups (answers that are 'Not Applicable')": given_up,
     }
-    for kind in sorted({p["seed"] for p in points.values() if p["seed"]}):
-        is_answer = kind in ("give_up", "quantity")
-        groups[f"seeded {'answers' if is_answer else 'calls'}: {kind}"] = \
-            lambda p, k=kind, a=is_answer: (p["tool"] == "finish") == a and p["seed"] in (None, k)
     if len(runs) > 1:
         print(f"Scores are averaged over {len(runs)} runs; 'runs' gives the lowest and highest single-run AUC.")
     report = {}
     for group, member in groups.items():
-        seeded = group.startswith("seeded")
-        print(f"\n== {group} (AUC wrong vs ok; {'seeded faults against correct originals' if seeded else 'natural steps'})")
+        print(f"\n== {group} (AUC wrong vs ok)")
         for split, parity in (("dev", 1), ("held-out", 0)):
-            ids = [pid for pid, lab in labels.items() if points[pid]["task_id"] % 2 == parity and member(points[pid])
-                   and (points[pid]["provenance"] == "seeded" or lab == "ok" if seeded else True)]
+            ids = [pid for pid in labels if points[pid]["task_id"] % 2 == parity and member(points[pid])]
             n_wrong = sum(map(wrong, ids))
             print(f"  {split}: {n_wrong} wrong, {len(ids) - n_wrong} ok"
                   + ("" if n_wrong >= MIN_WRONG and n_wrong < len(ids) else "  (too few to report)"))
@@ -283,9 +266,7 @@ def cmd_report(a) -> None:
     # and flags at most FALSE_ALARM of correct dev steps. Everything after is held-out.
     print(f"\n== Held-out catches at thresholds set on dev (each flags at most {FALSE_ALARM:.0%} of correct dev steps)")
     kinds = {"calls": lambda p: p["tool"] != "finish", "answers": lambda p: p["tool"] == "finish"}
-    pools = {"natural, give-ups excluded": lambda p: natural(p) and not given_up(p),
-             "natural give-ups": lambda p: natural(p) and given_up(p),
-             "seeded": lambda p: not natural(p)}
+    pools = {"give-ups excluded": lambda p: not given_up(p), "give-ups": given_up}
     caught = defaultdict(dict)      # checker -> point_id -> flagged, for held-out wrong steps
     for c in sorted({k[0] for k in scores}):
         for kind, member in kinds.items():

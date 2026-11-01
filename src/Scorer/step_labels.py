@@ -1,17 +1,15 @@
 """Step-level labels for verifier evaluation. Evaluation only: nothing here reaches a verifier state.
 
 A final answer is labeled by the Scorer. A compute_fees call on a fee question with a fixed shape is labeled
-against the scope the question implies (merchant, period, filters, hypothetical change). Seeded steps copy a
-correctly labeled step and introduce one known fault.
+against the scope the question implies (merchant, period, filters, hypothetical change).
 """
 from __future__ import annotations
 
 import calendar
-import json
 import re
 
 from models import AgentStep, EpisodeResult, Task
-from Scorer.scorer import Scorer, same_answer
+from Scorer.scorer import Scorer
 from Verifier.state import Point
 
 MONTHS = {name: number for number, name in enumerate(calendar.month_name) if name}
@@ -108,56 +106,3 @@ def label(point: Point, scorer: Scorer) -> tuple[str | None, list[str]]:
     faults = call_faults(gold, point.tool_args)
     return ("wrong" if faults else "ok"), faults
 
-
-def _numbers(value, path=""):
-    if isinstance(value, dict):
-        for key, item in value.items():
-            yield from _numbers(item, f"{path}.{key}" if path else key)
-    elif isinstance(value, str) and re.fullmatch(r"-?\d+(\.\d+)?", value):
-        yield path, value
-
-
-def seeds(point: Point) -> list[tuple[Point, str]]:
-    """Copies of a correctly labeled step, each with one known fault and the same history."""
-    out = []
-    if point.tool_name == "compute_fees":
-        args = point.tool_args
-        if isinstance(args.get("month"), int):
-            out.append(({**args, "month": args["month"] % 12 + 1}, "period"))
-        elif isinstance(args.get("day_of_year_min"), int):
-            shift = -1 if args["day_of_year_min"] > 1 else 1
-            out.append(({**args, "day_of_year_min": args["day_of_year_min"] + shift,
-                         "day_of_year_max": args["day_of_year_max"] + shift}, "period"))
-        else:
-            out.append(({**args, "month": 1}, "period"))
-        merchant = args.get("merchant")
-        out.append(({**args, "merchant": MERCHANTS[(MERCHANTS.index(merchant) + 1) % len(MERCHANTS)]
-                     if merchant in MERCHANTS else MERCHANTS[0]}, "merchant"))
-        if not args.get("exclude_refused"):
-            out.append(({**args, "exclude_refused": True}, "filter"))
-        scenario = args.get("scenario")
-        for key in ("fee_rule_id", "rate", "merchant_category_code"):
-            if scenario and isinstance(scenario.get(key), (int, float)) and not isinstance(scenario[key], bool):
-                out.append(({**args, "scenario": {**scenario, key: scenario[key] + 1}}, "change"))
-                break
-        return [(Point(f"{point.point_id}:seed-{kind}", point.task, point.history, point.tool_name, new), kind)
-                for new, kind in out]
-    if point.tool_name == "finish" and re.search(r"\d", point.final_answer or ""):
-        out.append(("Not Applicable", "give_up"))
-        fee_results = [s for s in point.history if s.tool_name == "compute_fees"]
-        if fee_results and re.fullmatch(r"-?[\d.]+", point.final_answer.strip()):
-            try:
-                result = json.loads(fee_results[-1].tool_result)
-            except ValueError:
-                result = {}
-            decimals = len(point.final_answer.strip().partition(".")[2])
-            summary = {k: result[k] for k in ("baseline", "scenario", "delta_fee") if k in result}
-            for path, value in _numbers(summary):
-                if path.endswith(("total_fee", "delta_fee", "matched_fee_total")):    # the last: runs before the policy fix
-                    other = f"{float(value):.{decimals}f}"
-                    if not same_answer(other, point.final_answer):
-                        out.append((other, "quantity"))
-                        break
-        return [(Point(f"{point.point_id}:seed-{kind}", point.task, point.history, "finish", {}, answer), kind)
-                for answer, kind in out]
-    return []
