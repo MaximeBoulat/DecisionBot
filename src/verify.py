@@ -30,7 +30,7 @@ from Verifier.questions import flag_score, questions_for
 from Verifier.state import STATE_VERSION, build_state
 
 TOKENIZE = Path.home() / "AI/llama.cpp-pr29030-v070/build/bin/llama-tokenize"
-FALSE_ALARM = 0.10      # thresholds flag at most this share of correct dev steps
+FALSE_ALARM = 0.20      # thresholds flag at most this share of correct dev steps
 MIN_WRONG = 5           # AUC lines with fewer wrong steps are not printed
 
 
