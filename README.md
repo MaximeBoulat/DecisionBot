@@ -1,155 +1,254 @@
 # DecisionBot
 
-A live agent that solves [DABstep](https://huggingface.co/datasets/adyen/DABstep) data-analysis tasks by making tool calls against the real payments dataset, with the choice of which tool to call next, and the value of each of its bounded arguments, delegated to a decision model (Jev) whenever Jev is confident enough — the agent's own generation model (Luna) only decides what Jev defers. This reproduces the tool-and-argument cascade from "JevAgentHarness: Benchmarking, Deploying and Training Decision Models That Share Control with LLMs" (Zhu et al.), using the DABstep benchmark's tasks, data and documentation as the test environment, and Jev as the decision model.
+## Introduction
 
-DecisionBot's runs are scored against an independently computed answer key (`answer_key.jsonl`).
+DecisionBot is an experimental harness for studying how an AI agent and independent verifiers succeed or fail on the same data-analysis tasks. It consists of two testing loops:
+
+1. **Agent execution:** an autonomous agent uses model inference and tools to solve tasks from the [DABstep benchmark](https://huggingface.co/datasets/adyen/DABstep). In the **shadow configuration used for the published experiment**, Luna decides every step of the main trajectory while Jev proposes tool and bounded-argument choices alongside it. Eligible disagreements produce separate continuations that force one Jev choice before Luna resumes.
+2. **Step verification:** recorded main episodes are replayed as review contexts. Jev and Luna independently assess each selected step using the task, documentation, and preceding trajectory. Their judgments are compared with separately constructed correctness labels to measure error detection, false alarms, and shared misses.
+
+### Experiment flow
+
+```mermaid
+flowchart TB
+    Benchmark["DABstep tasks, documentation and data"]
+    Key[("Answer key")]
+    Agent["Loop 1: Agent execution<br/>Luna controls; Jev shadows"]
+    Episodes[("episodes.jsonl<br/>Main trajectories and final answers")]
+    Debug[("debug/<br/>Model decisions and alternative continuations")]
+    Scorer["Task scoring"]
+    Scores[("scores.json")]
+    Build["Build verification points and separate labels"]
+    Points[("points.jsonl<br/>Task, preceding history and proposed step")]
+    Labels[("labels.jsonl<br/>Correctness labels")]
+    Verify["Loop 2: Independent step review<br/>Jev and Luna"]
+    Verdicts[("verdicts.jsonl<br/>Judgments and probabilities")]
+    Analysis["Evaluation<br/>Confusion, AUC and shared misses"]
+
+    Benchmark --> Agent
+    Agent --> Episodes
+    Agent --> Debug
+    Episodes --> Scorer
+    Key --> Scorer
+    Scorer --> Scores
+    Episodes --> Build
+    Key --> Build
+    Build --> Points
+    Build --> Labels
+    Points --> Verify
+    Verify --> Verdicts
+    Verdicts --> Analysis
+    Labels --> Analysis 
+
+    classDef process fill:#e8f0fe,stroke:#4267a9
+    classDef artifact fill:#edf0f4,stroke:#63758a
+    class Agent,Scorer,Build,Verify,Analysis process
+    class Key,Episodes,Debug,Scores,Points,Labels,Verdicts artifact
+```
+
 
 ## Usage
 
-Run from the project folder in a terminal:
+### Setup
 
-1. `cd` into this repository.
-2. Create `.env` in the repository root (not committed — `.gitignore` excludes it) with:
-   ```
+Run commands from the repository root.
+
+1. Create `.env` with the model credentials:
+   ```dotenv
    TYPESAFE_API_KEY=your-jev-key
    OPENAI_API_KEY=your-openai-key
    ```
-3. `uv sync` — creates `.venv` and installs the project.
-4. Run:
+2. Install the project into its virtual environment:
+   ```sh
+   uv sync
    ```
-   uv run src/main.py --mode shadow --task-value-usd 1.0 --limit 5
-   ```
-   This runs the first 5 of DABstep's 450 tasks, fetching the DABstep data on first use and writing `run.json`, `episodes.jsonl`, a per-task debug log under `debug/`, and `scores.json` into a timestamped folder under `out/runs/`. Increase `--limit` to run more tasks.
 
-To run and debug the same thing in VSCode instead: run `uv sync` once from the terminal first (VSCode doesn't do this for you), then open the Command Palette and run **Python: Select Interpreter**, choosing the `.venv` that `uv sync` just created. From there, open the Run and Debug panel and launch the **DecisionBot** configuration — it runs the command above, with breakpoints available anywhere in the call chain.
+### Loop 1: Run the agent
 
-### Advanced usage
+```sh
+uv run src/main.py --mode shadow
+```
 
-- `--mode` can also be:
-  - `baseline` — the generator decides every step by itself; only `OPENAI_API_KEY` is required.
-  - `cascade` — Jev's accepted judgments bypass the generator; requires either `--calibration <profile.json>` from a prior fit, or explicit `--tool-threshold`/`--argument-threshold` values.
-- `--task-ids` restricts a run to specific DABstep task IDs instead of `--limit`'s first-N.
-- To fit a calibration profile from shadow-mode runs, point `src/calibrate.py` at their debug logs:
-  ```
-  uv run src/calibrate.py <shadow-run>/debug/task_*.jsonl --output <profile.json> \
-    --generator-model gpt-6-luna --jev-model jev-latest
-  ```
-  The resulting profile can then be passed to a `cascade` run with `--calibration <profile.json>`.
-- To grade a previously recorded `episodes.jsonl` without making any model calls, run `src/main.py --score-only <path>`.
+This runs all 450 DABstep tasks and fetches the data on first use.
+
+| Optional argument | Example | Effect |
+|---|---|---|
+| `--limit` | `--limit 5` | Run only the first N tasks, after any task-ID filtering. |
+| `--task-ids` | `--task-ids 18 70 1296` | Run only the specified DABstep tasks. |
+
+Each run creates a timestamped directory under `out/runs/` containing:
+
+| Artifact | Contents |
+|---|---|
+| `run.json` | Run configuration |
+| `episodes.jsonl` | Main episodes, including task, documentation, steps and final answer |
+| `debug/` | Per-task model decisions, shadow comparisons and continuation logs |
+| `scores.json` | Task-level scores against the answer key |
+
+To score saved episodes without model calls:
+
+```sh
+uv run src/main.py --score-only out/runs/YOUR_RUN/episodes.jsonl
+```
+
+For VSCode debugging, select the repository's `.venv` interpreter and launch **DecisionBot**. Its current configuration runs shadow mode without a task limit; add `--limit` to its arguments for a smaller run.
+
+### Loop 2: Run the verifiers
+
+Set `AGENT_RUN` to the directory created by Loop 1 and choose a separate verification directory:
+
+```sh
+AGENT_RUN=out/runs/YOUR_RUN
+R=out/verify/YOUR_VERIFIER_RUN
+
+uv run src/verify.py build --episodes "$AGENT_RUN/episodes.jsonl" --run-dir "$R"
+
+uv run src/verify.py ask --run-dir "$R" --checker decision --model jev-latest
+uv run src/verify.py ask --run-dir "$R" --checker openai --model gpt-6-luna --effort medium
+
+uv run src/verify.py report --run-dir "$R"
+```
+
+- `build` creates `points.jsonl` and `labels.jsonl` without model calls. It uses the recorded steps and introduces no seeded errors.
+- `ask` reviews labelled steps by default and appends results to `verdicts.jsonl`. Repeating the same command resumes from cached successful responses. `--all` also reviews unlabelled steps; that expands beyond the published evaluation.
+- `report` prints the built-in evaluation. Its per-question and composite-score selection is distinct from the paper's analysis, which used the action score `1 - P(proceed)` on pooled labelled steps.
 
 ## Architecture
 
-Two boundaries matter: the agent's own control plane, where a generation model and a decision model are both invoked but play different roles, and the Scorer, which is deliberately a separate system that never participates in solving a task — it only grades what the agent already recorded.
-
-### Agent
+### Loop 1: run the eval and generate trajectories
 
 ```mermaid
 flowchart TB
-    Task["DABstep task"]
-    subgraph Plane["DecisionBot — agent control plane"]
-        subgraph Core["Core logic"]
-            AgentLoop["Agent orchestration<br/>decide, delegate, dispatch, loop"]
-            Context["Decision context<br/>task + step history"]
-            Cascade["Cascade<br/>tool and argument delegation, by threshold"]
-            subgraph Tools["Tools layer — contracts and callable capabilities"]
-                QueryTool["query_transactions<br/>filter, group and aggregate payments.csv"]
-                SqlTool["query_data<br/>read-only SQL over the raw DABstep tables"]
-                FeesTool["compute_fees<br/>merchant-guide fee matching over fees.json"]
-            end
-        end
-        subgraph Boundary["Model boundary"]
+    Task["DABstep task and documentation"]
+    Data[("DABstep tables")]
+    subgraph Agent["DecisionBot agent"]
+        Context["Decision context<br/>Task and preceding steps"]
+        Loop["Agent orchestration<br/>Dispatch, record and repeat"]
+        Shadow["Shadow decisions<br/>Compare tool and bounded-argument choices"]
+        Fork["Alternative continuation<br/>Force one Jev choice; Luna completes the task"]
+        subgraph Boundary["Model invocation"]
             GenAPI["Generation-model invocation"]
             DecisionAPI["Decision-model invocation"]
         end
+        subgraph Tools["Tools"]
+            Query["query_transactions"]
+            SQL["query_data"]
+            Fees["compute_fees"]
+        end
     end
-    OpenAI["OpenAI — GPT-6 Luna"]
-    Jev["Jev — decision model"]
-    Data[("DABstep data<br/>tasks, manual, payments")]
-    Results[("Recorded episodes")]
-    Task -->|"configures"| AgentLoop
-    Data -->|"question, docs"| AgentLoop
-    AgentLoop -->|"builds"| Context
-    Context -->|"supplies state"| Cascade
-    Cascade -->|"requests the tool and argument judgments"| DecisionAPI
-    DecisionAPI -->|"asks"| Jev
-    Jev -->|"returns a probability per option"| DecisionAPI
-    DecisionAPI -->|"choice and confidence"| Cascade
-    Cascade -->|"accepted choices bypass the generator"| AgentLoop
-    Cascade -->|"deferred choices and free text"| GenAPI
-    GenAPI -->|"calls"| OpenAI
-    OpenAI -->|"returns a tool call, arguments or an answer"| GenAPI
-    GenAPI -->|"returns proposal"| AgentLoop
-    AgentLoop -->|"dispatches"| Tools
-    QueryTool -->|"reads"| Data
-    SqlTool -->|"reads"| Data
-    FeesTool -->|"reads"| Data
-    Tools -->|"result"| AgentLoop
-    AgentLoop -->|"records"| Results
+    Luna["GPT-6 Luna"]
+    Jev["Jev"]
+    Episodes[("episodes.jsonl")]
+    Debug[("debug/<br/>Shadow decisions and continuation outcomes")]
+    Score["Scorer"]
+    Key[("Answer key")]
+
+    Task --> Context
+    Context --> GenAPI
+    GenAPI <--> Luna
+    GenAPI -->|"Luna's chosen step"| Loop
+    Context --> Shadow
+    Shadow --> DecisionAPI
+    DecisionAPI <--> Jev
+    GenAPI -->|"Actual choice for comparison"| Shadow
+    Shadow -->|"Eligible disagreement"| Fork
+    Context -->|"Same preceding history"| Fork
+    Fork --> GenAPI
+    Fork -->|"Execute forced and subsequent calls"| Tools
+    Fork -->|"Recorded outcome"| Debug
+    Fork -->|"Final answer"| Score
+    Shadow --> Debug
+    Loop -->|"Tool call"| Tools
+    Tools -->|"Result"| Loop
+    Data --> Query
+    Data --> SQL
+    Data --> Fees
+    Loop -->|"Updated history"| Context
+    Loop -->|"Main episode"| Episodes
+    Episodes --> Score
+    Key --> Score
+    Score -->|"Alternative outcome labels"| Debug
+
     classDef core fill:#e8f0fe,stroke:#4267a9
     classDef boundary fill:#edf0f4,stroke:#63758a
-    classDef external fill:#FFE4B5,stroke:#FF8C00
-    class AgentLoop,Context,Cascade,QueryTool,SqlTool,FeesTool core
+    classDef external fill:#fff2cc,stroke:#b58b24
+    class Context,Loop,Shadow,Fork,Query,SQL,Fees,Score core
     class GenAPI,DecisionAPI boundary
-    class OpenAI,Jev,Data external
-    style Results fill:#E3F2FD
+    class Luna,Jev,Data external
 ```
 
-The generation model (Luna) and the decision model (Jev) are invoked through the same kind of boundary but play different roles. At each step the cascade asks Jev which tool should be called next; if Jev's confidence on that choice clears the tool threshold, the choice is taken directly. For a chosen tool other than `finish`, the cascade separately asks Jev for the value of each bounded argument (one with a small, enumerable set of candidates drawn from the task and the step history), accepting each one whose confidence clears the argument threshold. Luna is only asked to decide what the cascade left open: the tool and arguments when Jev's tool confidence fell short, the remaining arguments when some were accepted and others were not, or the final answer text when the accepted choice is `finish`. The tools layer is three typed, fixed contracts: `query_transactions` and `compute_fees` cover filtering, aggregation and merchant-guide fee matching over the raw CSV/JSON files directly, and `query_data` runs one read-only SQL query over all of DABstep's tables for joins, percentiles and exact decimal arithmetic. Jev is never given a free-text channel — every judgment it returns is a probability over a small, enumerated set of options.
+1. **Prepare the task context.** The harness loads each DABstep task, its documentation and the data available to the tools. At each step, it assembles the task and preceding history as the context for the next decision.
 
-The tool and argument thresholds are not hand-set. They come from a calibration profile fitted by `src/calibrate.py` on shadow-mode runs: in shadow mode, the cascade still asks Jev for every tool and argument judgment and records its choice and confidence, but Luna always decides the actual step regardless of Jev's confidence. Whenever Jev's recorded choice disagrees with Luna's actual choice, DecisionBot forks the episode — it forces Jev's choice for that one decision and lets a baseline (Luna-only) continuation finish the task — and grades both the real episode and the forced continuation against the answer key, giving each decision a measured correctness label for Jev and for Luna. Paired with the measured dollar cost of the generator call that decision would have needed and an explicit, business-supplied dollar value for a correct task, `calibrate.py` sorts these labeled decisions into confidence bins and fits the lowest confidence above which every higher bin still shows a non-negative expected advantage to trusting Jev — the same rule the paper's cascade uses to set its thresholds.
+2. **Obtain and compare decisions.** Luna chooses the main trajectory's tool calls, arguments and final answer. Jev proposes choices and probabilities over enumerated tool and bounded-argument options. In shadow mode, Luna controls the main trajectory regardless of Jev's confidence; the harness records their agreements and disagreements.
+
+3. **Execute the step and continue.** The harness executes Luna's chosen tool call and adds its result to the history before requesting the next decision. The available tools are `query_transactions` to filter, group and aggregate payments, `query_data` to execute read-only SQL over DABstep tables, and `compute_fees` to match fee rules and calculate merchant fees. This loop continues until the agent submits an answer, reaches its step limit or encounters an error.
+
+4. **Explore alternative decisions.** For an eligible disagreement, the harness also starts a separate continuation from the same preceding history, forces one Jev choice and lets Luna finish. A task can have several such continuations. Each tests the effect of substituting one Jev decision; none replaces the main episode.
+
+5. **Record and score the outcomes.** Main episodes are saved in `episodes.jsonl`; shadow decisions and alternative-continuation outcomes are recorded under `debug/`. The Scorer grades final answers against the answer key, keeping main-agent results separate from alternative outcomes. Loop 2 uses the recorded main episodes to construct its verification points.
+
+### Loop 2: replay trajectories to the verifiers and score them
 
 ```mermaid
 flowchart TB
-    Start@{ shape: start }
-    BuildCtx["Build decision context<br/>from task and history"]
-    AskTool["Cascade: ask Jev for the tool"]
-    ToolGate{"Tool confidence ≥ threshold?"}
-    AskArgs["Cascade: ask Jev each<br/>bounded argument's value"]
-    NeedsGen{"Anything still<br/>left open?"}
-    CompleteStep["Generator fills only<br/>what the cascade left open"]
-    ProposeStep["Generator proposes<br/>the whole step"]
-    Dispatch["Dispatch the tool call"]
-    Observe["Record the step"]
-    MaxSteps{"Max steps reached?"}
-    Finish@{ shape: stop, label: "Episode finished<br/>answer recorded" }
-    Fail@{ shape: stop, label: "Episode failed<br/>no answer" }
-    Start --> BuildCtx --> AskTool --> ToolGate
-    ToolGate -->|"no"| ProposeStep
-    ToolGate -->|"yes"| AskArgs --> NeedsGen
-    NeedsGen -->|"yes"| CompleteStep
-    NeedsGen -->|"no"| Dispatch
-    CompleteStep -->|"tool call"| Dispatch
-    CompleteStep -->|"final answer"| Finish
-    ProposeStep -->|"tool call"| Dispatch
-    ProposeStep -->|"final answer"| Finish
-    Dispatch --> Observe --> MaxSteps
-    MaxSteps -->|"no"| BuildCtx
-    MaxSteps -->|"yes"| Fail
-    classDef core fill:#e8f0fe,stroke:#4267a9
-    classDef gate fill:#fff2cc,stroke:#b58b24
-    classDef terminal fill:#E3F2FD,stroke:#1565c0
-    class BuildCtx,AskTool,AskArgs,CompleteStep,ProposeStep,Dispatch,Observe core
-    class ToolGate,NeedsGen,MaxSteps gate
-    class Finish,Fail terminal
-```
-
-Every step is recorded regardless of which side decided it, along with which Jev judgments were accepted and which were deferred, so the full episode — what Jev decided, what the generator filled in, and what finally got submitted — is reconstructible from `EpisodeResult` alone. `EpisodeResult` also carries the count of generator and Jev calls the episode actually made, so cascade runs can be compared against baseline (generator-only) runs on cost as well as success.
-
-### Scoring
-
-```mermaid
-flowchart TB
-    Results[("Recorded episodes")]
-    AnswerKey[("Answer key")]
-    subgraph ScorerPlane["Scorer"]
-        Score["Grade episodes<br/>against the answer key"]
+    Episodes[("Recorded main episodes")]
+    Key[("Answer key")]
+    subgraph Verifier["Verifier"]
+        subgraph Preparation["Dataset preparation"]
+            Build["Construct one point per recorded step"]
+            State["Review context<br/>Task, documentation, preceding history,<br/>proposed step and computed facts"]
+            Label["Label final answers and supported fee-call templates"]
+            Select["Select labelled points for review"]
+            Questions["Original questions<br/>Fee calls or final answers"]
+        end
+        subgraph Invocation["Model invocation"]
+            DecisionAPI["Jev checker"]
+            GenAPI["Luna checker"]
+        end
+        subgraph Evaluation["Evaluation"]
+            Calibrate["Fit decision thresholds<br/>Development tasks"]
+            Evaluate["Measure detection and shared misses<br/>Held-out tasks"]
+        end
     end
-    Results -->|"reads"| Score
-    AnswerKey -->|"reads"| Score
-    classDef scorer fill:#f3e5ff,stroke:#8326c4
-    class Score scorer
-    style Results fill:#E3F2FD
-    style AnswerKey fill:#E3F2FD
+    Jev["Jev"]
+    Luna["GPT-6 Luna"]
+    Points[("points.jsonl")]
+    Labels[("labels.jsonl")]
+    Verdicts[("verdicts.jsonl")]
+
+    Episodes --> Build
+    Build --> State
+    State --> Points
+    Build --> Label
+    Key --> Label
+    Label --> Labels
+    Points --> Select
+    Labels -->|"Label availability only"| Select
+    Select --> DecisionAPI
+    Select --> GenAPI
+    Questions --> DecisionAPI
+    Questions --> GenAPI
+    DecisionAPI <--> Jev
+    GenAPI <--> Luna
+    DecisionAPI --> Verdicts
+    GenAPI --> Verdicts
+    Verdicts --> Calibrate
+    Labels --> Calibrate
+    Calibrate -->|"Fixed thresholds"| Evaluate
+    Verdicts --> Evaluate
+    Labels --> Evaluate
+
+    classDef core fill:#e8f0fe,stroke:#4267a9
+    classDef artifact fill:#edf0f4,stroke:#63758a
+    class Build,State,Label,Select,Questions,DecisionAPI,GenAPI,Calibrate,Evaluate core
+    class Episodes,Key,Points,Labels,Verdicts artifact
 ```
 
-The Scorer is a separate system from the agent: it never runs a task, it only reads the episodes the agent already recorded and the answer key, and grades one against the other.
+1. **Prepare the review dataset.** Each recorded step becomes a review point containing the task, documentation, preceding history, proposed step and computed facts. Correctness labels are constructed separately: final answers are graded against the answer key, while supported `compute_fees` templates are checked against the task's required arguments. Labelled points are selected for review by default; unlabelled steps do not enter the default correctness evaluation.
+
+2. **Ask both verifiers.** Jev and Luna independently review each selected point as it appeared before the proposed step took effect. Neither sees later steps, the answer key, correctness labels or task scores. For fee calls, the questions cover period, merchant, exclusions, hypothetical changes and the recommended action. For final answers, they cover the requested quantity, support from tool results, answerability, format and the recommended action. Both checkers return probabilities for the action choices **Proceed, Revise, Recheck and Ask**, alongside their responses to the other questions. These responses are saved in `verdicts.jsonl`.
+
+3. **Calibrate the thresholds.** Odd task IDs form the development set; even IDs form the held-out set, keeping all steps from a task together. The published analysis uses `1 - P(proceed)` as each step's suspicion score. For each verifier, it selects the lowest cutoff that flags no more than **20% of correct development steps**; a step is flagged when its score exceeds that cutoff. The built-in `report` instead selects a question or composite score separately for fee calls and final answers using development AUC, then fits thresholds under the same 20% false-alarm constraint, flagging scores at or above its cutoff.
+
+4. **Evaluate on held-out steps.** The selected scoring rules and thresholds remain fixed. Flags are compared with the held-out correctness labels to measure detected errors, missed errors, false alarms and correct approvals, including errors missed by both verifiers. AUC measures how well suspicion scores separate incorrect from correct steps across thresholds.
+
