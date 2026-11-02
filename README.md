@@ -194,14 +194,21 @@ flowchart TB
     Episodes[("Recorded main episodes")]
     Key[("Answer key")]
     subgraph Verifier["Verifier"]
-        Build["Construct one point per recorded step"]
-        State["Review context<br/>Task, documentation, preceding history,<br/>proposed step and computed facts"]
-        Label["Label final answers and supported fee-call templates"]
-        Select["Select labelled points for review"]
-        Questions["Original questions<br/>Fee calls or final answers"]
-        DecisionAPI["Jev checker"]
-        GenAPI["Luna checker"]
-        Evaluate["Evaluate against separate labels<br/>Development calibration; held-out scoring"]
+        subgraph Preparation["Dataset preparation"]
+            Build["Construct one point per recorded step"]
+            State["Review context<br/>Task, documentation, preceding history,<br/>proposed step and computed facts"]
+            Label["Label final answers and supported fee-call templates"]
+            Select["Select labelled points for review"]
+            Questions["Original questions<br/>Fee calls or final answers"]
+        end
+        subgraph Invocation["Model invocation"]
+            DecisionAPI["Jev checker"]
+            GenAPI["Luna checker"]
+        end
+        subgraph Evaluation["Evaluation"]
+            Calibrate["Fit decision thresholds<br/>Development tasks"]
+            Evaluate["Measure detection and shared misses<br/>Held-out tasks"]
+        end
     end
     Jev["Jev"]
     Luna["GPT-6 Luna"]
@@ -225,12 +232,15 @@ flowchart TB
     GenAPI <--> Luna
     DecisionAPI --> Verdicts
     GenAPI --> Verdicts
+    Verdicts --> Calibrate
+    Labels --> Calibrate
+    Calibrate -->|"Fixed thresholds"| Evaluate
     Verdicts --> Evaluate
     Labels --> Evaluate
 
     classDef core fill:#e8f0fe,stroke:#4267a9
     classDef artifact fill:#edf0f4,stroke:#63758a
-    class Build,State,Label,Select,Questions,DecisionAPI,GenAPI,Evaluate core
+    class Build,State,Label,Select,Questions,DecisionAPI,GenAPI,Calibrate,Evaluate core
     class Episodes,Key,Points,Labels,Verdicts artifact
 ```
 

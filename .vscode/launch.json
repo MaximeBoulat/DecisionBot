@@ -10,9 +10,28 @@
                 "--mode",
                 "shadow",
                 "--task-value-usd",
-                "1.0",
-                "--limit",
-                "50"
+                "1.0"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Verifier",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/verify.py",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "ask",
+                "--run-dir",
+                "out/runs/shadow-20261022T041321930239Z/verify",
+                "--checker",
+                "openai",
+                "--model",
+                "gpt-6-luna",
+                "--effort",
+                "medium",
+                "--all"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal"
