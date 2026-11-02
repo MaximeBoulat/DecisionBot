@@ -20,6 +20,8 @@ from data import DabstepData
 from debug_log import DebugLog
 from models import EpisodeResult
 
+TASK_VALUE_USD = 1.0
+
 
 def _summarize(result: EpisodeResult) -> str:
     return (f"Task {result.task_id}: {'finished' if result.finished else result.error}; "
@@ -48,9 +50,6 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=15)
     parser.add_argument("--task-ids", type=int, nargs="+")
     parser.add_argument("--limit", type=int, help="Run only the first N tasks (after any other task filtering).")
-    parser.add_argument("--task-value-usd", type=float,
-                        help="Dollar value of one correct task (V in the cascade's cost model). "
-                             "Required in shadow mode; it labels shadow decisions, it is not measured.")
     options = parser.parse_args()
     scorer = Scorer(ANSWER_KEY_PATH)
     if options.score_only is not None:
@@ -77,8 +76,6 @@ def main() -> None:
             tool_threshold, argument_threshold = profile["tool_threshold"], profile["argument_threshold"]
         elif options.mode == "cascade" and (tool_threshold is None or argument_threshold is None):
             parser.error("Cascade requires --calibration or both explicit thresholds; no threshold is assumed")
-        if options.mode == "shadow" and options.task_value_usd is None:
-            parser.error("Shadow mode requires --task-value-usd to label decisions")
         data = DabstepData(DATA_DIR)
         data.fetch()
         tasks = list(data.load_tasks().values())
@@ -103,7 +100,7 @@ def main() -> None:
         tools = ToolsLayer(DATA_DIR)
         cascade = Cascade(decision_model, tool_threshold, argument_threshold)
         agent = Agent(generator, cascade, tools, documentation, options.mode, options.max_steps,
-                      scorer, options.task_value_usd, len(tasks))
+                      scorer, TASK_VALUE_USD, len(tasks))
         run_dir = OUT_PATH.parent / "runs" / (options.mode + "-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
         run_dir.mkdir(parents=True, exist_ok=False)
         (run_dir / "run.json").write_text(json.dumps({

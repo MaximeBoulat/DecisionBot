@@ -8,9 +8,7 @@
             "program": "${workspaceFolder}/src/main.py",
             "args": [
                 "--mode",
-                "shadow",
-                "--task-value-usd",
-                "1.0"
+                "shadow"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal"

@@ -7,8 +7,6 @@ DecisionBot is an experimental harness for studying how an AI agent and independ
 1. **Agent execution:** an autonomous agent uses model inference and tools to solve tasks from the [DABstep benchmark](https://huggingface.co/datasets/adyen/DABstep). In the **shadow configuration used for the published experiment**, Luna decides every step of the main trajectory while Jev proposes tool and bounded-argument choices alongside it. Eligible disagreements produce separate continuations that force one Jev choice before Luna resumes.
 2. **Step verification:** recorded main episodes are replayed as review contexts. Jev and Luna independently assess each selected step using the task, documentation, and preceding trajectory. Their judgments are compared with separately constructed correctness labels to measure error detection, false alarms, and shared misses.
 
-The second loop reviews recorded decisions; it does not intervene in the original agent run or execute its tools again. The published evaluation covered labelled `compute_fees` calls and final answers. SQL and `query_transactions` steps were recorded but excluded from that labelled evaluation.
-
 ### Experiment flow
 
 ```mermaid
@@ -48,7 +46,6 @@ flowchart TB
     class Key,Episodes,Debug,Scores,Points,Labels,Verdicts artifact
 ```
 
-The answer key and correctness labels are evaluation inputs. Neither the agent's decision context nor the verifier's review context includes them.
 
 ## Usage
 
@@ -69,10 +66,15 @@ Run commands from the repository root.
 ### Loop 1: Run the agent
 
 ```sh
-uv run src/main.py --mode shadow --task-value-usd 1.0 --limit 5
+uv run src/main.py --mode shadow
 ```
 
-This runs the first five tasks, fetching DABstep data on first use. Use `--limit 450` for the full benchmark, or `--task-ids` to select particular tasks. The `--task-value-usd` option supplies the task value required by shadow-mode decision records; it is not an API spending limit.
+This runs all 450 DABstep tasks and fetches the data on first use.
+
+| Optional argument | Example | Effect |
+|---|---|---|
+| `--limit` | `--limit 5` | Run only the first N tasks, after any task-ID filtering. |
+| `--task-ids` | `--task-ids 18 70 1296` | Run only the specified DABstep tasks. |
 
 Each run creates a timestamped directory under `out/runs/` containing:
 
@@ -111,11 +113,9 @@ uv run src/verify.py report --run-dir "$R"
 - `ask` reviews labelled steps by default and appends results to `verdicts.jsonl`. Repeating the same command resumes from cached successful responses. `--all` also reviews unlabelled steps; that expands beyond the published evaluation.
 - `report` prints the built-in evaluation. Its per-question and composite-score selection is distinct from the paper's analysis, which used the action score `1 - P(proceed)` on pooled labelled steps.
 
-The published experiment used `out/runs/shadow-20261022T041321930239Z/episodes.jsonl` and its original `verifier/` artifacts: 1,833 recorded steps, 909 labelled steps, and 430 labelled held-out steps. It used the original verification questions, without the `rule-questions` experiment.
-
 ## Architecture
 
-### DecisionBot agent: shadow mode
+### Loop 1: run the eval and generate trajectories
 
 ```mermaid
 flowchart TB
@@ -177,17 +177,17 @@ flowchart TB
     class Luna,Jev,Data external
 ```
 
-Luna chooses the main trajectory's tool calls, arguments and final answer. Jev returns choices and probabilities over enumerated tool and argument options; its confidence does not override Luna in shadow mode.
+1. **Prepare the task context.** The harness loads each DABstep task, its documentation and the data available to the tools. At each step, it assembles the task and preceding history as the context for the next decision.
 
-For an eligible disagreement, the harness starts a separate continuation from the preceding history, forces one Jev choice, and lets Luna finish. A task can have several such continuations. They do not replace its main episode, and Loop 2 builds its verification points from the main episodes.
+2. **Obtain and compare decisions.** Luna chooses the main trajectory's tool calls, arguments and final answer. Jev proposes choices and probabilities over enumerated tool and bounded-argument options. In shadow mode, Luna controls the main trajectory regardless of Jev's confidence; the harness records their agreements and disagreements.
 
-The tools provide three capabilities:
+3. **Execute the step and continue.** The harness executes Luna's chosen tool call and adds its result to the history before requesting the next decision. The available tools are `query_transactions` to filter, group and aggregate payments, `query_data` to execute read-only SQL over DABstep tables, and `compute_fees` to match fee rules and calculate merchant fees. This loop continues until the agent submits an answer, reaches its step limit or encounters an error.
 
-- `query_transactions`: filter, group and aggregate payments.
-- `query_data`: execute read-only SQL over DABstep tables.
-- `compute_fees`: match fee rules and calculate merchant fees.
+4. **Explore alternative decisions.** For an eligible disagreement, the harness also starts a separate continuation from the same preceding history, forces one Jev choice and lets Luna finish. A task can have several such continuations. Each tests the effect of substituting one Jev decision; none replaces the main episode.
 
-### Verifier: recorded-step review
+5. **Record and score the outcomes.** Main episodes are saved in `episodes.jsonl`; shadow decisions and alternative-continuation outcomes are recorded under `debug/`. The Scorer grades final answers against the answer key, keeping main-agent results separate from alternative outcomes. Loop 2 uses the recorded main episodes to construct its verification points.
+
+### Loop 2: replay trajectories to the verifiers and score them
 
 ```mermaid
 flowchart TB
@@ -244,14 +244,11 @@ flowchart TB
     class Episodes,Key,Points,Labels,Verdicts artifact
 ```
 
-Each checker sees the proposed step as it appeared before taking effect, together with the available preceding context. It does not see later steps, the answer key, correctness labels or task scores.
+1. **Prepare the review dataset.** Each recorded step becomes a review point containing the task, documentation, preceding history, proposed step and computed facts. Correctness labels are constructed separately: final answers are graded against the answer key, while supported `compute_fees` templates are checked against the task's required arguments. Labelled points are selected for review by default; unlabelled steps do not enter the default correctness evaluation.
 
-For fee calls, the questions cover period, merchant, exclusions, hypothetical changes and the recommended action. For final answers, they cover the requested quantity, support from tool results, answerability, format and the recommended action. Both checkers return probabilities for the action choices **Proceed, Revise, Recheck and Ask**.
+2. **Ask both verifiers.** Jev and Luna independently review each selected point as it appeared before the proposed step took effect. Neither sees later steps, the answer key, correctness labels or task scores. For fee calls, the questions cover period, merchant, exclusions, hypothetical changes and the recommended action. For final answers, they cover the requested quantity, support from tool results, answerability, format and the recommended action. Both checkers return probabilities for the action choices **Proceed, Revise, Recheck and Ask**, alongside their responses to the other questions. These responses are saved in `verdicts.jsonl`.
 
-Correctness labels are constructed separately: final answers are graded against the answer key, while supported `compute_fees` templates are checked against the task's required arguments. Unlabelled steps do not enter the default correctness evaluation. Odd task IDs form the development set; even IDs form the held-out set.
+3. **Calibrate the thresholds.** Odd task IDs form the development set; even IDs form the held-out set, keeping all steps from a task together. The published analysis uses `1 - P(proceed)` as each step's suspicion score. For each verifier, it selects the lowest cutoff that flags no more than **20% of correct development steps**; a step is flagged when its score exceeds that cutoff. The built-in `report` instead selects a question or composite score separately for fee calls and final answers using development AUC, then fits thresholds under the same 20% false-alarm constraint, flagging scores at or above its cutoff.
 
-### Scoring
+4. **Evaluate on held-out steps.** The selected scoring rules and thresholds remain fixed. Flags are compared with the held-out correctness labels to measure detected errors, missed errors, false alarms and correct approvals, including errors missed by both verifiers. AUC measures how well suspicion scores separate incorrect from correct steps across thresholds.
 
-The Scorer grades recorded answers; it does not participate in selecting the agent's next action. Main-agent task results and outcomes after individual forced Jev decisions are separate measurements.
-
-Tasks with multiple interpretations are gradeable when every interpretation gives the same normalized answer. For the MCC and ACI fee-extreme templates, the scorer interprets "most expensive" as the highest single fee, using the empty-list-as-wildcard reading. This policy is selected from official DABstep grading evidence for task 1443 and applied across those template families; it is not established solely by the business manual or independently confirmed for every task. Score details record the selected interpretation and scoring basis. Tasks whose interpretations remain unresolved are reported as ambiguous and excluded from accuracy.
