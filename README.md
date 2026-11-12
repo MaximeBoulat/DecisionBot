@@ -47,6 +47,18 @@ flowchart TB
 ```
 
 
+## License and data attribution
+
+DecisionBot code is licensed under the [Apache License 2.0](LICENSE).
+
+This project uses [DABstep](https://huggingface.co/datasets/adyen/DABstep), created by Adyen and Hugging Face and licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+## Answer-key methodology and access
+
+Astra compiled the initial 450-task reference key from the benchmark data and documentation, recording calculations, citations, and alternative interpretations. The scoring procedure was then corrected and validated against the official right/wrong grades and submitted answers of four DABstep submissions (1,800 answers), including numerical tolerance, formatting, and fee-rule interpretation. Officially accepted answers resolved selected ambiguous tasks; unresolved tasks remain unscored.
+
+The locally reconstructed `answer_key.jsonl` is available from the maintainers on request.
+
 ## Usage
 
 ### Setup
